@@ -109,21 +109,13 @@ class TelegramGiftDetector:
             
             gift_info = None
             
-            # 🎁 МЕТОД 1: Поиск в service messages (самый точный)
+            # 🎁 ОСНОВНОЙ МЕТОД: Поиск официальных Telegram Gifts в service messages
             if message.service:
                 gift_info = await self._check_service_message(message)
             
-            # 🎁 МЕТОД 2: Поиск gift stickers и gift buttons
-            if not gift_info:
-                gift_info = await self._check_gift_stickers(message)
-            
-            # 🎁 МЕТОД 3: Анализ текста сообщения
-            if not gift_info and message.text:
-                gift_info = await self._check_text_content(message)
-            
-            # 🎁 МЕТОД 4: Анализ медиа и документов
-            if not gift_info:
-                gift_info = await self._check_media_content(message)
+            # 🎁 ДОПОЛНИТЕЛЬНЫЙ: Поиск упоминаний подарков в тексте (для отладки)
+            if not gift_info and message.text and len(message.text) < 500:
+                gift_info = await self._check_gift_mentions(message)
             
             # Если подарок найден - отправляем информацию отправителю
             if gift_info:
@@ -137,154 +129,132 @@ class TelegramGiftDetector:
             logger.error(f"❌ Ошибка обработки сообщения: {e}")
     
     async def _check_service_message(self, message) -> Optional[Dict[str, Any]]:
-        """Проверка service messages на наличие подарков"""
+        """Проверка service messages на наличие Telegram Gifts"""
         try:
-            # Проверяем различные типы service messages
-            service_type = str(type(message.service).__name__)
-            
-            if 'gift' in service_type.lower():
-                logger.info(f"🎁 Обнаружен подарок в service message: {service_type}")
+            # Проверяем messageActionStarGift и другие gift service messages
+            if hasattr(message, 'service') and message.service:
+                service_type = str(type(message.service).__name__)
                 
-                gift_info = {
-                    "id": f"service_{message.id}",
-                    "type": "Telegram Gift",
-                    "service_type": service_type,
-                    "detected_at": datetime.now().isoformat(),
-                    "sender": self._get_sender_info(message),
-                    "chat": self._get_chat_info(message),
-                    "detection_method": "service_message",
-                    "message_id": message.id
-                }
+                # Проверяем на Star Gift (основной тип подарков)
+                if 'StarGift' in service_type or 'Gift' in service_type:
+                    logger.info(f"🎁 Обнаружен Telegram Gift: {service_type}")
+                    
+                    gift_info = {
+                        "id": f"gift_{message.id}_{int(datetime.now().timestamp())}",
+                        "type": "Telegram Star Gift",
+                        "service_type": service_type,
+                        "detected_at": datetime.now().isoformat(),
+                        "sender": self._get_sender_info(message),
+                        "chat": self._get_chat_info(message),
+                        "detection_method": "star_gift_service",
+                        "message_id": message.id,
+                        "is_private_message": message.chat.type.name == "PRIVATE" if hasattr(message.chat, 'type') else True
+                    }
+                    
+                    # Извлекаем данные о подарке из service message
+                    if hasattr(message.service, 'gift'):
+                        gift = message.service.gift
+                        gift_info.update({
+                            "gift_id": getattr(gift, 'id', None),
+                            "stars": getattr(gift, 'stars', 0),
+                            "convert_stars": getattr(gift, 'convert_stars', 0),
+                            "first_sale_date": getattr(gift, 'first_sale_date', None),
+                            "last_sale_date": getattr(gift, 'last_sale_date', None),
+                            "birthday_months": getattr(gift, 'birthday_months', None),
+                            "sold_out": getattr(gift, 'sold_out', False),
+                            "limited": getattr(gift, 'limited', False),
+                            "total_count": getattr(gift, 'total_count', 0),
+                            "remaining_count": getattr(gift, 'remaining_count', 0)
+                        })
+                        
+                        # Формируем читаемую информацию
+                        gift_info["price"] = f"{gift_info['stars']} ⭐"
+                        if gift_info['limited'] and gift_info['total_count'] > 0:
+                            gift_info["availability"] = f"{gift_info['remaining_count']}/{gift_info['total_count']} осталось"
+                        else:
+                            gift_info["availability"] = "Неограниченно"
+                    
+                    # Проверяем другие поля service message
+                    elif hasattr(message.service, '__dict__'):
+                        service_data = message.service.__dict__
+                        gift_info.update({
+                            "service_data": str(service_data),
+                            "price": self._extract_price_from_service(service_data),
+                            "quantity": self._extract_quantity_from_service(service_data)
+                        })
+                    
+                    return gift_info
                 
-                # Пытаемся извлечь дополнительную информацию
-                if hasattr(message.service, '__dict__'):
-                    service_data = message.service.__dict__
-                    gift_info.update({
-                        "service_data": str(service_data),
-                        "price": self._extract_price_from_service(service_data),
-                        "quantity": self._extract_quantity_from_service(service_data)
-                    })
-                
-                return gift_info
-                
+                # Проверяем messageActionGiftPremium (подарочная Premium подписка)
+                elif 'GiftPremium' in service_type:
+                    logger.info(f"🎁 Обнаружен подарок Premium: {service_type}")
+                    
+                    gift_info = {
+                        "id": f"premium_{message.id}_{int(datetime.now().timestamp())}",
+                        "type": "Telegram Premium Gift",
+                        "service_type": service_type,
+                        "detected_at": datetime.now().isoformat(),
+                        "sender": self._get_sender_info(message),
+                        "chat": self._get_chat_info(message),
+                        "detection_method": "premium_gift_service",
+                        "message_id": message.id,
+                        "is_private_message": message.chat.type.name == "PRIVATE" if hasattr(message.chat, 'type') else True
+                    }
+                    
+                    # Извлекаем данные о Premium подарке
+                    if hasattr(message.service, '__dict__'):
+                        service_data = message.service.__dict__
+                        gift_info.update({
+                            "months": service_data.get('months', 0),
+                            "currency": service_data.get('currency', 'USD'),
+                            "amount": service_data.get('amount', 0),
+                            "crypto_currency": service_data.get('crypto_currency', None),
+                            "crypto_amount": service_data.get('crypto_amount', None)
+                        })
+                        
+                        gift_info["price"] = f"{gift_info['amount']/100:.2f} {gift_info['currency']}"
+                        gift_info["duration"] = f"{gift_info['months']} месяцев Premium"
+                    
+                    return gift_info
+                    
         except Exception as e:
             logger.error(f"❌ Ошибка проверки service message: {e}")
         return None
     
-    async def _check_gift_stickers(self, message) -> Optional[Dict[str, Any]]:
-        """Проверка стикеров и кнопок подарков"""
-        try:
-            # Проверяем стикеры
-            if message.sticker:
-                sticker_set = message.sticker.set_name
-                if sticker_set and ('gift' in sticker_set.lower() or 'star' in sticker_set.lower()):
-                    logger.info(f"🎁 Обнаружен gift sticker: {sticker_set}")
-                    return {
-                        "id": f"sticker_{message.id}",
-                        "type": "Gift Sticker",
-                        "sticker_set": sticker_set,
-                        "detected_at": datetime.now().isoformat(),
-                        "sender": self._get_sender_info(message),
-                        "chat": self._get_chat_info(message),
-                        "detection_method": "gift_sticker"
-                    }
-            
-            # Проверяем inline кнопки
-            if message.reply_markup and hasattr(message.reply_markup, 'inline_keyboard'):
-                for row in message.reply_markup.inline_keyboard:
-                    for button in row:
-                        if button.text and ('gift' in button.text.lower() or '🎁' in button.text):
-                            logger.info(f"🎁 Обнаружена gift кнопка: {button.text}")
-                            return {
-                                "id": f"button_{message.id}",
-                                "type": "Gift Button",
-                                "button_text": button.text,
-                                "detected_at": datetime.now().isoformat(),
-                                "sender": self._get_sender_info(message),
-                                "chat": self._get_chat_info(message),
-                                "detection_method": "gift_button"
-                            }
-                            
-        except Exception as e:
-            logger.error(f"❌ Ошибка проверки стикеров: {e}")
-        return None
-    
-    async def _check_text_content(self, message) -> Optional[Dict[str, Any]]:
-        """Анализ текста сообщения на наличие подарков"""
+    async def _check_gift_mentions(self, message) -> Optional[Dict[str, Any]]:
+        """Поиск упоминаний подарков в тексте (для отладки)"""
         try:
             text = message.text.lower()
             
-            # Расширенные ключевые слова для подарков
+            # Простые паттерны для отладки
             gift_patterns = [
-                r'🎁.*gift',
-                r'star.*gift',
-                r'подарок.*звезд',
-                r'gift.*star',
-                r'premium.*gift',
-                r'unique.*gift',
-                r'limited.*gift',
-                r'collect.*gift',
-                r'получить.*подарок',
-                r'send.*gift',
-                r'отправить.*подарок'
+                'telegram gift',
+                'star gift', 
+                'подарок звезд',
+                'gift received',
+                'получен подарок'
             ]
             
             for pattern in gift_patterns:
-                if re.search(pattern, text, re.IGNORECASE):
-                    logger.info(f"🎁 Обнаружен подарок в тексте: {pattern}")
-                    
+                if pattern in text:
+                    logger.info(f"🎁 Упоминание подарка в тексте: {pattern}")
                     return {
-                        "id": f"text_{message.id}",
-                        "type": "Text Gift Detection",
-                        "pattern_matched": pattern,
-                        "price": self._extract_price_from_text(text),
+                        "id": f"mention_{message.id}",
+                        "type": "Gift Mention",
+                        "pattern": pattern,
                         "detected_at": datetime.now().isoformat(),
                         "sender": self._get_sender_info(message),
                         "chat": self._get_chat_info(message),
-                        "detection_method": "text_analysis",
-                        "original_text": message.text[:200] + "..." if len(message.text) > 200 else message.text
+                        "detection_method": "text_mention",
+                        "is_private_message": message.chat.type.name == "PRIVATE" if hasattr(message.chat, 'type') else True,
+                        "text_preview": text[:100] + "..." if len(text) > 100 else text
                     }
                     
         except Exception as e:
-            logger.error(f"❌ Ошибка анализа текста: {e}")
+            logger.error(f"❌ Ошибка поиска упоминаний: {e}")
         return None
     
-    async def _check_media_content(self, message) -> Optional[Dict[str, Any]]:
-        """Проверка медиа контента на наличие подарков"""
-        try:
-            # Проверяем документы
-            if message.document:
-                file_name = message.document.file_name or ""
-                if 'gift' in file_name.lower():
-                    logger.info(f"🎁 Обнаружен gift документ: {file_name}")
-                    return {
-                        "id": f"doc_{message.id}",
-                        "type": "Gift Document",
-                        "file_name": file_name,
-                        "detected_at": datetime.now().isoformat(),
-                        "sender": self._get_sender_info(message),
-                        "chat": self._get_chat_info(message),
-                        "detection_method": "document_analysis"
-                    }
-            
-            # Проверяем фото с caption
-            if message.photo and message.caption:
-                caption = message.caption.lower()
-                if any(word in caption for word in ['gift', 'подарок', 'star', '🎁']):
-                    logger.info(f"🎁 Обнаружен gift в photo caption")
-                    return {
-                        "id": f"photo_{message.id}",
-                        "type": "Gift Photo",
-                        "caption": message.caption[:100],
-                        "detected_at": datetime.now().isoformat(),
-                        "sender": self._get_sender_info(message),
-                        "chat": self._get_chat_info(message),
-                        "detection_method": "photo_caption"
-                    }
-                    
-        except Exception as e:
-            logger.error(f"❌ Ошибка проверки медиа: {e}")
-        return None
+
     
     async def _send_gift_info_to_sender(self, original_message, gift_info):
         """Отправка информации о подарке отправителю"""
@@ -315,29 +285,37 @@ class TelegramGiftDetector:
             logger.error(f"❌ Ошибка отправки ответа: {e}")
     
     def _format_gift_response(self, gift_info) -> str:
-        """Форматирование ответа с информацией о подарке"""
-        response = f"""
-🎁 <b>ОБНАРУЖЕН ПОДАРОК!</b>
-
-📋 <b>Информация:</b>
-• ID: <code>{gift_info.get('id', 'N/A')}</code>
-• Тип: {gift_info.get('type', 'Unknown')}
-• Метод: {gift_info.get('detection_method', 'N/A')}
-• Время: {gift_info.get('detected_at', 'N/A')}
-
-💰 <b>Детали:</b>
-• Цена: {gift_info.get('price', 'Неизвестно')}
-• Количество: {gift_info.get('quantity', 'Неизвестно')}
-• Статус: {gift_info.get('status', 'Неизвестно')}
-
-📍 <b>Источник:</b>
-• Отправитель: {gift_info.get('sender', 'Неизвестно')}
-• Чат: {gift_info.get('chat', 'Неизвестно')}
-
-🤖 <i>Автоматически обнаружено Telegram Gift Detector</i>
-        """.strip()
+        """Форматирование ответа с информацией о Telegram Gift"""
         
-        return response
+        # Базовая информация
+        response = f"🎁 <b>TELEGRAM GIFT ОБНАРУЖЕН!</b>\n\n"
+        response += f"📋 <b>Основная информация:</b>\n"
+        response += f"• <b>Тип:</b> {gift_info.get('type', 'Unknown Gift')}\n"
+        response += f"• <b>ID:</b> <code>{gift_info.get('id', 'N/A')}</code>\n"
+        response += f"• <b>Время:</b> {gift_info.get('detected_at', 'N/A')}\n"
+
+        # Информация о цене и доступности
+        if gift_info.get('price'):
+            response += f"\n💰 <b>Стоимость:</b>\n"
+            response += f"• <b>Цена:</b> {gift_info.get('price')}\n"
+            
+            if gift_info.get('availability'):
+                response += f"• <b>Доступность:</b> {gift_info.get('availability')}\n"
+            
+            if gift_info.get('convert_stars'):
+                response += f"• <b>Конвертация:</b> {gift_info.get('convert_stars')} ⭐\n"
+
+        # Информация об отправителе
+        response += f"\n👤 <b>Отправитель:</b> {gift_info.get('sender', 'Неизвестно')}\n"
+        
+        # Техническая информация
+        response += f"\n🔧 <b>Детали:</b>\n"
+        response += f"• <b>Метод:</b> {gift_info.get('detection_method', 'N/A')}\n"
+        response += f"• <b>Service:</b> <code>{gift_info.get('service_type', 'N/A')}</code>\n"
+
+        response += f"\n🤖 <i>Telegram Gift Detector v2.0</i>"
+        
+        return response.strip()
     
     def _get_sender_info(self, message) -> str:
         """Получение информации об отправителе"""
