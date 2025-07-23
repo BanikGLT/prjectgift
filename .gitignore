@@ -1,8 +1,28 @@
+# Python
 __pycache__/
-.env
-.venv
+*.py[cod]
+*$py.class
+*.so
+.Python
 env/
 venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
 .idea/
-data/account.session
-config.ini
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local

@@ -1,20 +1,26 @@
-#!/usr/bin/env python3
-"""
-Telegram Gift Detector - Smart Deploy Version
-Умная версия: работает с Telegram если есть зависимости, иначе показывает настройки
-"""
-
 from fastapi import FastAPI
 
-app = FastAPI()
+app = FastAPI(
+    title="🎁 Telegram Gift Detector",
+    description="Professional gift detection service for Telegram",
+    version="1.0.0"
+)
 
 @app.get("/")
 def read_root():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "message": "Telegram Gift Detector is running",
+        "version": "1.0.0"
+    }
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "service": "Telegram Gift Detector"}
+    return {
+        "status": "healthy", 
+        "service": "Telegram Gift Detector",
+        "uptime": "running"
+    }
 
 @app.get("/info")
 def get_info():
@@ -22,5 +28,19 @@ def get_info():
         "name": "Telegram Gift Detector",
         "version": "1.0.0",
         "description": "Smart Telegram gift detection service",
-        "status": "ready for deployment"
+        "status": "ready for deployment",
+        "endpoints": {
+            "root": "/",
+            "health": "/health",
+            "info": "/info",
+            "docs": "/docs"
+        }
+    }
+
+@app.get("/status")
+def get_status():
+    return {
+        "service": "online",
+        "deployment": "successful",
+        "ready": True
     }
