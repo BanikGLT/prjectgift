@@ -4,16 +4,10 @@ Telegram Gift Detector - Smart Deploy Version
 Умная версия: работает с Telegram если есть зависимости, иначе показывает настройки
 """
 
-import os
-import sys
-import asyncio
-import logging
-from typing import Optional, Dict, Any
-
 from fastapi import FastAPI
 
 app = FastAPI()
- 
+
 @app.get("/")
 def read_root():
     return {"status": "ok"}
