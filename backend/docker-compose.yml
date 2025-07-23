@@ -16,6 +16,10 @@ services:
       - RESPONSE_DELAY=0.5
       - MAX_RETRIES=3
     
+    # Порты для FastAPI
+    ports:
+      - "8000:8000"
+    
     # Монтирование volumes для сохранения данных
     volumes:
       - ./logs:/app/logs
@@ -30,11 +34,11 @@ services:
     deploy:
       resources:
         limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
           memory: 512M
           cpus: '0.5'
-        reservations:
-          memory: 256M
-          cpus: '0.25'
     
     # Логирование
     logging:
@@ -46,13 +50,13 @@ services:
     # Политика перезапуска
     restart: unless-stopped
     
-    # Проверка здоровья
+    # Проверка здоровья через API
     healthcheck:
-      test: ["CMD", "python", "-c", "import os; exit(0 if os.path.exists('gift_detector.log') else 1)"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 30s
 
 volumes:
   gift_detector_data:
