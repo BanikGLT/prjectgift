@@ -516,17 +516,22 @@ async def health_check():
 # =============================================================================
 
 if __name__ == "__main__":
+    import os
+    
     # Настройка логирования для FastAPI
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
+    # Получаем порт из переменной окружения (для облачных платформ)
+    port = int(os.environ.get("PORT", 8000))
+    
     # Запуск сервера
     uvicorn.run(
         "api:app",
         host="0.0.0.0",
-        port=8000,
+        port=port,
         reload=False,  # В продакшене отключаем reload
         access_log=True
     )
