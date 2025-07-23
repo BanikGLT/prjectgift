@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  gift-detector:
+    build: .
+    container_name: telegram-gift-detector
+    restart: unless-stopped
+    
+    # Переменные окружения из файла
+    env_file:
+      - .env
+    
+    # Альтернативно можно указать напрямую
+    environment:
+      - LOG_LEVEL=INFO
+      - RESPONSE_DELAY=0.5
+      - MAX_RETRIES=3
+    
+    # Монтирование volumes для сохранения данных
+    volumes:
+      - ./logs:/app/logs
+      - ./sessions:/app/sessions
+      - gift_detector_data:/app/data
+    
+    # Настройки безопасности
+    security_opt:
+      - no-new-privileges:true
+    
+    # Ограничения ресурсов
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    
+    # Логирование
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Политика перезапуска
+    restart: unless-stopped
+    
+    # Проверка здоровья
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; exit(0 if os.path.exists('gift_detector.log') else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  gift_detector_data:
+    driver: local
+
+networks:
+  default:
+    name: gift-detector-network
