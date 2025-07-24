@@ -445,7 +445,7 @@ def read_root():
                     </div>
                     
                     <!-- Поля для авторизации -->
-                    <div id="auth-fields" style="display: none;">
+                    <div id="auth-fields" style="display: block; background: #f0f8ff; border: 2px solid #007bff; border-radius: 10px; padding: 20px; margin: 20px 0;">
                         <div class="form-group">
                             <label>SMS код:</label>
                             <input type="text" id="sms_code" placeholder="12345" maxlength="5">
