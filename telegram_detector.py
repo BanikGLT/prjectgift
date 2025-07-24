@@ -23,6 +23,15 @@ class TelegramGiftDetector:
         self.is_running = False
         self.gift_callback = None
         
+        # Создаем папку для сессий если её нет
+        import os
+        self.sessions_dir = "sessions"
+        if not os.path.exists(self.sessions_dir):
+            os.makedirs(self.sessions_dir)
+        
+        # Полный путь к файлу сессии
+        self.session_file = os.path.join(self.sessions_dir, f"{session_name}.session")
+        
     async def start(self, gift_callback=None):
         """Запуск детектора подарков с реальной авторизацией"""
         try:
@@ -33,12 +42,13 @@ class TelegramGiftDetector:
             
             self.gift_callback = gift_callback
             
-            # Создание клиента Pyrogram
+            # Создание клиента Pyrogram с сохранением сессии
             self.client = Client(
-                name=self.session_name,
+                name=self.session_file,  # Используем полный путь к файлу сессии
                 api_id=int(self.api_id),
                 api_hash=self.api_hash,
-                phone_number=self.phone_number
+                phone_number=self.phone_number,
+                workdir=self.sessions_dir  # Указываем рабочую директорию для сессий
             )
             
             # Регистрация обработчиков ВСЕХ сообщений

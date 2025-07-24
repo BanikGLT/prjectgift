@@ -179,6 +179,57 @@ def read_root():
             });
         }
         
+        function loadSessions() {
+            fetch('/detector/sessions')
+                .then(response => response.json())
+                .then(data => {
+                    const sessionsList = document.getElementById('sessions-list');
+                    if (data.sessions.length === 0) {
+                        sessionsList.innerHTML = '<p>Сохраненных сессий нет</p>';
+                        return;
+                    }
+                    
+                    let html = '<div style="background: #f8f9fa; padding: 15px; border-radius: 8px;">';
+                    html += '<h4>Сохраненные сессии:</h4>';
+                    
+                    data.sessions.forEach(session => {
+                        const date = new Date(session.modified).toLocaleString();
+                        html += `
+                            <div style="background: white; margin: 10px 0; padding: 15px; border-radius: 6px; border: 1px solid #ddd;">
+                                <strong>📱 ${session.phone}</strong><br>
+                                <small>Размер: ${(session.size / 1024).toFixed(1)} KB | Изменено: ${date}</small><br>
+                                <button class="btn danger" style="margin-top: 10px; font-size: 12px; padding: 5px 10px;" 
+                                        onclick="deleteSession('${session.name}')">🗑️ Удалить</button>
+                            </div>
+                        `;
+                    });
+                    
+                    html += '</div>';
+                    sessionsList.innerHTML = html;
+                })
+                .catch(error => {
+                    document.getElementById('sessions-list').innerHTML = '<p>Ошибка загрузки сессий</p>';
+                });
+        }
+        
+        function deleteSession(sessionName) {
+            if (!confirm('Удалить эту сессию? Потребуется повторная авторизация.')) {
+                return;
+            }
+            
+            fetch(`/detector/sessions/${sessionName}`, {
+                method: 'DELETE'
+            })
+            .then(response => response.json())
+            .then(data => {
+                alert(data.message);
+                loadSessions(); // Обновляем список
+            })
+            .catch(error => {
+                alert('Ошибка удаления сессии: ' + error);
+            });
+        }
+        
         setInterval(refreshStatus, 5000);
         window.onload = refreshStatus;
         </script>
@@ -242,6 +293,16 @@ def read_root():
                 </div>
                 
                 <div>
+                    <h3>💾 Управление сессиями</h3>
+                    <div class="config-form">
+                        <button class="btn" onclick="loadSessions()">🔄 Обновить список сессий</button>
+                        <div id="sessions-list" style="margin-top: 15px;">
+                            <p>Нажмите "Обновить список сессий" для просмотра</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div>
                     <h3>📝 История подарков</h3>
                     <div class="gift-history" id="gift-history">
                         <p>История подарков появится здесь...</p>
@@ -298,12 +359,23 @@ async def start_detector(config: TelegramConfig):
         from pyrogram import Client
         from pyrogram.errors import SessionPasswordNeeded
         
-        # Создаем клиент
+        # Создаем папку для сессий
+        import os
+        sessions_dir = "sessions"
+        if not os.path.exists(sessions_dir):
+            os.makedirs(sessions_dir)
+        
+        # Имя сессии на основе номера телефона
+        session_name = f"gift_detector_{config.phone_number.replace('+', '').replace(' ', '')}"
+        session_file = os.path.join(sessions_dir, session_name)
+        
+        # Создаем клиент с сохранением сессии
         client = Client(
-            name="gift_detector_session",
+            name=session_file,
             api_id=int(config.api_id),
             api_hash=config.api_hash,
-            phone_number=config.phone_number
+            phone_number=config.phone_number,
+            workdir=sessions_dir
         )
         
         # Сохраняем в сессию
@@ -313,18 +385,28 @@ async def start_detector(config: TelegramConfig):
         # Пытаемся подключиться
         await client.connect()
         
-        # Проверяем, авторизован ли уже
-        if await client.get_me():
-            # Уже авторизован, запускаем детектор
-            auth_session["awaiting_sms"] = False
-            return await _start_detector_after_auth()
-        else:
-            # Нужна авторизация, отправляем SMS
+        # Проверяем, авторизован ли уже (есть ли сохраненная сессия)
+        try:
+            me = await client.get_me()
+            if me:
+                # Уже авторизован, запускаем детектор
+                auth_session["awaiting_sms"] = False
+                logger.info(f"Используется сохраненная сессия для {me.first_name} (@{me.username})")
+                return await _start_detector_after_auth()
+        except Exception as e:
+            logger.info(f"Сохраненная сессия недействительна: {e}")
+        
+        # Нужна новая авторизация, отправляем SMS
+        try:
             await client.send_code(config.phone_number)
             auth_session["awaiting_sms"] = True
             
             logger.info(f"SMS код отправлен на {config.phone_number}")
             return {"message": "SMS код отправлен", "status": "sms_required"}
+        except Exception as e:
+            await client.disconnect()
+            auth_session["client"] = None
+            raise Exception(f"Ошибка отправки SMS: {str(e)}")
             
     except ImportError:
         raise HTTPException(status_code=500, detail="Pyrogram не установлен")
@@ -433,6 +515,44 @@ async def stop_detector():
 @app.get("/detector/history")
 def get_gift_history():
     return {"gifts": gift_history}
+
+@app.get("/detector/sessions")
+def get_saved_sessions():
+    """Получить список сохраненных сессий"""
+    import os
+    sessions_dir = "sessions"
+    sessions = []
+    
+    if os.path.exists(sessions_dir):
+        for file in os.listdir(sessions_dir):
+            if file.endswith('.session'):
+                session_name = file.replace('.session', '')
+                file_path = os.path.join(sessions_dir, file)
+                file_size = os.path.getsize(file_path)
+                modified_time = os.path.getmtime(file_path)
+                
+                sessions.append({
+                    "name": session_name,
+                    "size": file_size,
+                    "modified": datetime.fromtimestamp(modified_time).isoformat(),
+                    "phone": session_name.replace('gift_detector_', '+').replace('gift_detector', 'unknown')
+                })
+    
+    return {"sessions": sessions}
+
+@app.delete("/detector/sessions/{session_name}")
+def delete_session(session_name: str):
+    """Удалить сохраненную сессию"""
+    import os
+    sessions_dir = "sessions"
+    session_file = os.path.join(sessions_dir, f"{session_name}.session")
+    
+    if os.path.exists(session_file):
+        os.remove(session_file)
+        logger.info(f"Сессия {session_name} удалена")
+        return {"message": f"Сессия {session_name} удалена"}
+    else:
+        raise HTTPException(status_code=404, detail="Сессия не найдена")
 
 @app.post("/detector/simulate-gift")
 async def simulate_gift():

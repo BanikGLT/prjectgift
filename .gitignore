@@ -26,3 +26,7 @@ Thumbs.db
 # Environment variables
 .env
 .env.local
+
+# Telegram sessions (содержат приватные данные)
+sessions/
+*.session
