@@ -37,7 +37,27 @@ async def start_gift_detector(client):
     @client.on_message()
     async def handle_message(client, message):
         try:
-            logger.info(f"Получено сообщение: {message.message_id} от {message.from_user.id if message.from_user else 'unknown'}")
+            # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ КАЖДОГО СООБЩЕНИЯ
+            logger.info(f"📨 ПОЛУЧЕНО СООБЩЕНИЕ:")
+            logger.info(f"  - ID: {message.message_id}")
+            logger.info(f"  - От: {message.from_user.id if message.from_user else 'unknown'}")
+            logger.info(f"  - Чат: {message.chat.id if message.chat else 'unknown'}")
+            logger.info(f"  - Тип: {type(message)}")
+            logger.info(f"  - Текст: {message.text[:100] if message.text else 'нет текста'}")
+            
+            # ПРОВЕРЯЕМ ВСЕ АТРИБУТЫ СООБЩЕНИЯ
+            logger.info(f"  - Есть service: {hasattr(message, 'service')}")
+            if hasattr(message, 'service') and message.service:
+                logger.info(f"  - Service type: {type(message.service)}")
+                logger.info(f"  - Service name: {type(message.service).__name__}")
+                logger.info(f"  - Service data: {str(message.service)[:500]}")
+                logger.info(f"  - Service attributes: {[attr for attr in dir(message.service) if not attr.startswith('_')]}")
+            
+            # ПРОВЕРЯЕМ ДРУГИЕ ВОЗМОЖНЫЕ ПОЛЯ
+            logger.info(f"  - Есть media: {hasattr(message, 'media')}")
+            logger.info(f"  - Есть action: {hasattr(message, 'action')}")
+            logger.info(f"  - Есть gift: {hasattr(message, 'gift')}")
+            logger.info(f"  - Есть star_gift: {hasattr(message, 'star_gift')}")
             
             # Проверяем на подарки
             gift_info = await check_for_gifts(message)
@@ -57,37 +77,74 @@ async def start_gift_detector(client):
                 
                 # Отправляем ответ отправителю
                 await send_gift_response(client, message, gift_info)
+            else:
+                logger.info("❌ Подарок НЕ найден в этом сообщении")
                 
         except Exception as e:
             logger.error(f"Ошибка обработки сообщения: {e}")
+            logger.error(f"Тип ошибки: {type(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
     
     logger.info("🎁 Детектор подарков активирован и слушает сообщения!")
 
 async def check_for_gifts(message):
     """Проверяет сообщение ТОЛЬКО на наличие STAR GIFTS"""
     
-    # ТОЛЬКО Star Gifts через service messages
+    logger.info("🔍 НАЧИНАЕМ ПОИСК STAR GIFTS...")
+    
+    # 1. Проверяем service messages
     if hasattr(message, 'service') and message.service:
         service_type = str(type(message.service).__name__)
         logger.info(f"🔍 Service message detected: {service_type}")
         
-        # ТОЛЬКО Star Gifts!
-        if 'StarGift' in service_type or 'star_gift' in service_type.lower():
-            logger.info("⭐ STAR GIFT ОБНАРУЖЕН!")
-            gift_details = await extract_star_gift_info(message.service)
+        # Проверяем ВСЕ возможные варианты Star Gift
+        star_gift_patterns = ['StarGift', 'star_gift', 'stargift', 'Gift', 'gift']
+        
+        for pattern in star_gift_patterns:
+            if pattern in service_type:
+                logger.info(f"⭐ ВОЗМОЖНЫЙ STAR GIFT по pattern '{pattern}': {service_type}")
+                gift_details = await extract_star_gift_info(message.service)
+                return {
+                    "type": "star_gift",
+                    "service_type": service_type,
+                    "details": gift_details
+                }
+        
+        # Логируем все service messages для анализа
+        logger.info(f"📝 Service message НЕ распознан как Star Gift: {service_type}")
+        logger.info(f"📄 Полные данные service: {str(message.service)}")
+    
+    # 2. Проверяем другие возможные поля
+    if hasattr(message, 'gift'):
+        logger.info(f"🎁 Найдено поле 'gift': {message.gift}")
+        return {
+            "type": "star_gift",
+            "service_type": "direct_gift_field",
+            "details": {"gift_type": "Direct Gift Field", "raw_data": str(message.gift)}
+        }
+    
+    if hasattr(message, 'star_gift'):
+        logger.info(f"⭐ Найдено поле 'star_gift': {message.star_gift}")
+        return {
+            "type": "star_gift", 
+            "service_type": "direct_star_gift_field",
+            "details": {"gift_type": "Direct Star Gift Field", "raw_data": str(message.star_gift)}
+        }
+    
+    # 3. Проверяем media
+    if hasattr(message, 'media') and message.media:
+        media_type = str(type(message.media).__name__)
+        logger.info(f"📺 Media detected: {media_type}")
+        if 'gift' in media_type.lower():
+            logger.info(f"🎁 Возможный подарок в media: {media_type}")
             return {
                 "type": "star_gift",
-                "service_type": service_type,
-                "details": gift_details
+                "service_type": f"media_{media_type}",
+                "details": {"gift_type": "Media Gift", "raw_data": str(message.media)}
             }
-        
-        else:
-            # Логируем все остальные service messages для отладки
-            logger.info(f"📝 Non-StarGift service message: {service_type}")
-            # Проверяем может быть Star Gift скрыт в других типах
-            if 'gift' in service_type.lower():
-                logger.info(f"🔍 Потенциальный подарок: {service_type} - {str(message.service)[:300]}")
     
+    logger.info("❌ Star Gift НЕ найден во всех проверенных полях")
     return None
 
 async def extract_star_gift_info(service):
