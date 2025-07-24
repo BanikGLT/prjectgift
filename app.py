@@ -645,6 +645,7 @@ async def index():
         <button class="btn" onclick="viewHistory()">📜 История подарков</button>
         <button class="btn" onclick="simulateGift()">🎁 Тестовый подарок</button>
         <button class="btn" onclick="viewSessions()">💾 Сессии</button>
+        <button class="btn" onclick="debugInfo()">🐛 Отладка</button>
             
             <div style="margin-top: 20px;">
                 <h3>Статус: <span id="status">Неактивен</span></h3>
@@ -665,19 +666,43 @@ async def index():
                 return;
             }
             
+            console.log('Отправляем конфиг:', config);
+            
             fetch('/detector/start', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(config)
             })
-            .then(response => response.json())
+            .then(async response => {
+                console.log('Response status:', response.status);
+                console.log('Response ok:', response.ok);
+                
+                if (!response.ok) {
+                    // Читаем ошибку как текст
+                    const errorText = await response.text();
+                    console.error('Error response:', errorText);
+                    
+                    try {
+                        const errorData = JSON.parse(errorText);
+                        throw new Error(errorData.detail || errorText);
+                    } catch (parseError) {
+                        throw new Error(errorText || `HTTP ${response.status}`);
+                    }
+                }
+                
+                return response.json();
+            })
             .then(data => {
+                console.log('Success data:', data);
                 alert('Ответ сервера: ' + data.message);
-                console.log('Данные:', data);
+                
+                if (data.status === 'sms_required') {
+                    console.log('SMS отправлен, показываем поля авторизации');
+                }
             })
             .catch(error => {
+                console.error('Полная ошибка:', error);
                 alert('Ошибка: ' + error.message);
-                console.error('Ошибка:', error);
             });
         }
         
@@ -692,19 +717,41 @@ async def index():
                 return;
             }
             
+            console.log('Отправляем auth data:', authData);
+            
             fetch('/detector/complete_auth', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(authData)
             })
-            .then(response => response.json())
+            .then(async response => {
+                console.log('Auth response status:', response.status);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('Auth error response:', errorText);
+                    
+                    try {
+                        const errorData = JSON.parse(errorText);
+                        throw new Error(errorData.detail || errorText);
+                    } catch (parseError) {
+                        throw new Error(errorText || `HTTP ${response.status}`);
+                    }
+                }
+                
+                return response.json();
+            })
             .then(data => {
+                console.log('Auth success data:', data);
                 alert('Результат авторизации: ' + data.message);
-                console.log('Авторизация:', data);
+                
+                if (data.status === 'success') {
+                    console.log('Авторизация успешна, детектор запущен');
+                }
             })
             .catch(error => {
+                console.error('Auth полная ошибка:', error);
                 alert('Ошибка авторизации: ' + error.message);
-                console.error('Ошибка:', error);
             });
         }
         
@@ -775,6 +822,26 @@ async def index():
                     .catch(error => alert('Ошибка: ' + error.message));
             }
             
+            function debugInfo() {
+                fetch('/detector/debug')
+                    .then(response => response.json())
+                    .then(data => {
+                        const debugText = `ОТЛАДОЧНАЯ ИНФОРМАЦИЯ:\\n\\n` +
+                            `Detector Status: ${JSON.stringify(data.detector_status, null, 2)}\\n\\n` +
+                            `Auth Session Keys: ${data.auth_session_keys.join(', ')}\\n` +
+                            `Has Client: ${data.has_client}\\n` +
+                            `Awaiting SMS: ${data.awaiting_sms}\\n` +
+                            `Phone Number: ${data.phone_number}`;
+                        
+                        console.log('Debug Info:', data);
+                        alert(debugText);
+                    })
+                    .catch(error => {
+                        console.error('Debug error:', error);
+                        alert('Ошибка получения отладочной информации: ' + error.message);
+                    });
+            }
+            
             setInterval(refreshStatus, 5000);
             refreshStatus();
         </script>
@@ -786,13 +853,30 @@ async def index():
 async def get_status():
     return detector_status
 
+@app.get("/detector/debug")
+async def get_debug_info():
+    """Отладочная информация"""
+    return {
+        "detector_status": detector_status,
+        "auth_session_keys": list(auth_session.keys()),
+        "has_client": "client" in auth_session,
+        "awaiting_sms": auth_session.get("awaiting_sms", False),
+        "phone_number": auth_session.get("phone_number", "N/A")
+    }
+
 @app.post("/detector/start")
 async def start_detector(config: TelegramConfig):
+    logger.info(f"🚀 Получен запрос на запуск детектора: {config}")
+    
     if detector_status["running"]:
+        logger.warning("Детектор уже запущен")
         raise HTTPException(status_code=400, detail="Детектор уже запущен")
     
     # Валидация входных данных
+    logger.info(f"Валидируем данные: api_id={config.api_id}, api_hash={config.api_hash[:8]}..., phone={config.phone_number}")
+    
     if not config.api_id or not config.api_hash or not config.phone_number:
+        logger.error("Не все поля заполнены")
         raise HTTPException(status_code=400, detail="Все поля обязательны для заполнения")
     
     if not config.api_id.isdigit():
@@ -914,7 +998,10 @@ async def start_detector(config: TelegramConfig):
 
 @app.post("/detector/complete_auth")
 async def complete_auth(auth_data: dict):
+    logger.info(f"📱 Получен запрос на подтверждение авторизации: {auth_data}")
+    
     if not auth_session.get("client"):
+        logger.error("Клиент не найден в auth_session")
         raise HTTPException(status_code=400, detail="Клиент не найден. Сначала нажмите 'Запустить детектор'")
         
     logger.info("Начинаем подтверждение авторизации...")
