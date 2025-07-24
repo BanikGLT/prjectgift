@@ -45,12 +45,20 @@ async def start_gift_detector(client):
     async def handle_incoming_messages(client, message):
         """Обрабатывает ВСЕ входящие сообщения для поиска подарков"""
         try:
+            # ЛОГИРУЕМ АБСОЛЮТНО ВСЕ СООБЩЕНИЯ для диагностики
+            chat_type = getattr(message.chat, 'type', 'unknown') if message.chat else 'no_chat'
+            from_user_id = message.from_user.id if message.from_user else 'no_user'
+            
+            logger.info(f"🔍 ЛЮБОЕ СООБЩЕНИЕ: chat_type={chat_type}, from_user={from_user_id}, my_id={my_user_id}")
+            
             # Проверяем что это ЛИЧНОЕ сообщение (не группа)
             if not message.chat or message.chat.type != "private":
+                logger.info(f"❌ Игнорируем не-ЛС: chat_type={chat_type}")
                 return  # Игнорируем групповые чаты
             
             # Проверяем что сообщение НЕ от меня (входящее)
             if not message.from_user or message.from_user.id == my_user_id:
+                logger.info(f"❌ Игнорируем свое сообщение: from_user_id={from_user_id}")
                 return  # Игнорируем свои сообщения
             
             sender_id = message.from_user.id
@@ -58,6 +66,14 @@ async def start_gift_detector(client):
             
             logger.info(f"📨 ВХОДЯЩЕЕ ЛС от @{sender_username} (ID: {sender_id})")
             logger.info(f"📝 Текст: {getattr(message, 'text', 'N/A')}")
+            
+            # ЛОГИРУЕМ ВСЕ АТРИБУТЫ СООБЩЕНИЯ
+            logger.info(f"🔍 Атрибуты сообщения:")
+            logger.info(f"  - message_id: {getattr(message, 'message_id', 'N/A')}")
+            logger.info(f"  - service: {getattr(message, 'service', 'N/A')}")
+            logger.info(f"  - action: {getattr(message, 'action', 'N/A')}")
+            logger.info(f"  - media: {getattr(message, 'media', 'N/A')}")
+            logger.info(f"  - caption: {getattr(message, 'caption', 'N/A')}")
             
             # ДЕТЕКТИРУЕМ ПОДАРКИ В СООБЩЕНИИ
             gift_detected = await detect_gift_in_message(message)
@@ -82,6 +98,8 @@ async def start_gift_detector(client):
                 
                 # ОТВЕЧАЕМ ОТПРАВИТЕЛЮ
                 await send_gift_thank_you_response(client, message, gift_detected)
+            else:
+                logger.info(f"❌ Подарок НЕ найден в сообщении от @{sender_username}")
             
         except Exception as e:
             logger.error(f"Ошибка в handle_incoming_messages: {e}")
@@ -89,25 +107,47 @@ async def start_gift_detector(client):
     async def detect_gift_in_message(message):
         """Детектирует подарки в сообщении - ВСЕ возможные способы"""
         try:
-            logger.info("🔍 Анализируем сообщение на наличие подарков...")
+            logger.info("🔍 НАЧИНАЕМ АГРЕССИВНЫЙ АНАЛИЗ ПОДАРКОВ...")
             
             # МЕТОД 1: Service Message (самый надежный для подарков)
             if hasattr(message, 'service') and message.service:
                 service_type = type(message.service).__name__
-                logger.info(f"🔧 Service Message: {service_type}")
+                logger.info(f"🔧 Service Message найден: {service_type}")
+                logger.info(f"🔧 Service данные: {str(message.service)}")
                 
-                # Проверяем типы связанные с подарками
-                gift_service_types = ['MessageServiceStarGift', 'MessageServiceGiftPremium', 'MessageServiceGift']
-                if any(gift_type in service_type for gift_type in gift_service_types):
-                    logger.info(f"🎁 ПОДАРОК найден в Service Message!")
+                # Проверяем типы связанные с подарками (РАСШИРЕННЫЙ СПИСОК)
+                gift_service_types = [
+                    'MessageServiceStarGift', 'MessageServiceGiftPremium', 'MessageServiceGift',
+                    'StarGift', 'GiftPremium', 'Gift', 'star_gift', 'gift_premium'
+                ]
+                
+                service_str = str(service_type).lower()
+                for gift_type in gift_service_types:
+                    if gift_type.lower() in service_str:
+                        logger.info(f"🎁 ПОДАРОК найден в Service Message! Тип: {gift_type}")
+                        
+                        return {
+                            "type": "service_gift",
+                            "source": "service_message",
+                            "details": {
+                                "service_type": service_type,
+                                "service_data": str(message.service),
+                                "gift_type": "Service Message Gift",
+                                "matched_pattern": gift_type
+                            }
+                        }
+                
+                # Если не нашли точное совпадение, но есть service - тоже логируем
+                if 'gift' in service_str or 'star' in service_str:
+                    logger.info(f"🎁 ВОЗМОЖНЫЙ ПОДАРОК в Service (нечеткое совпадение): {service_type}")
                     
                     return {
-                        "type": "service_gift",
-                        "source": "service_message",
+                        "type": "possible_service_gift",
+                        "source": "service_message_fuzzy",
                         "details": {
                             "service_type": service_type,
                             "service_data": str(message.service),
-                            "gift_type": "Service Message Gift"
+                            "gift_type": "Possible Service Gift"
                         }
                     }
             
@@ -146,17 +186,25 @@ async def start_gift_detector(client):
                         }
                     }
             
-            # МЕТОД 4: Текстовые паттерны (уведомления о подарках)
+            # МЕТОД 4: Текстовые паттерны (уведомления о подарках) - МАКСИМАЛЬНО АГРЕССИВНО
+            text_to_check = ""
             if hasattr(message, 'text') and message.text:
-                text = message.text.lower()
+                text_to_check += message.text.lower()
+            if hasattr(message, 'caption') and message.caption:
+                text_to_check += " " + message.caption.lower()
+            
+            if text_to_check:
+                logger.info(f"🔍 Проверяем текст на подарки: '{text_to_check}'")
                 
-                # Паттерны подарков в тексте
+                # РАСШИРЕННЫЕ паттерны подарков в тексте
                 gift_patterns = [
-                    'подарил', 'gift', 'star', 'звезд', 'подарок',
-                    'коллекционный', 'лимитированный', 'редкий'
+                    'подарил', 'gift', 'star', 'звезд', 'подарок', 'подарки',
+                    'коллекционный', 'лимитированный', 'редкий', 'мишка', 'bear',
+                    '⭐', '🎁', '🌟', 'stars', 'premium', 'улучшенный',
+                    'sent you', 'отправил', 'прислал', 'дарит'
                 ]
                 
-                found_patterns = [pattern for pattern in gift_patterns if pattern in text]
+                found_patterns = [pattern for pattern in gift_patterns if pattern in text_to_check]
                 if found_patterns:
                     logger.info(f"🎁 ПОДАРОЧНЫЕ ПАТТЕРНЫ найдены: {found_patterns}")
                     
@@ -164,11 +212,13 @@ async def start_gift_detector(client):
                         "type": "text_gift",
                         "source": "text_patterns",
                         "details": {
-                            "text": message.text,
+                            "text": text_to_check,
                             "patterns_found": found_patterns,
                             "gift_type": "Text Pattern Gift"
                         }
                     }
+                else:
+                    logger.info(f"❌ Подарочные паттерны НЕ найдены в тексте")
             
             # МЕТОД 5: Проверяем все атрибуты сообщения на наличие gift/star
             message_attrs = dir(message)
