@@ -11,316 +11,262 @@ app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Глобальные переменные состояния
-detector_status = {
-    "running": False,
-    "status": "Неактивен",
-    "gifts_found": 0,
-    "uptime": "0",
-    "start_time": None,
-    "history": []
-}
+# Глобальные переменные
+detector_status = {"running": False, "gifts_found": 0}
+auth_session = {}
 
-auth_session = {
-    "client": None,
-    "config": None,
-    "awaiting_sms": False,
-    "awaiting_password": False
-}
-
-# gift_history удален - теперь используется detector_status["gifts_history"]
-
-# Функция для запуска детектора подарков
+# Функция для запуска детектора подарков - ПОЛНАЯ ПЕРЕДЕЛКА
 async def start_gift_detector(client):
-    """ДЕТЕКТОР ВХОДЯЩИХ ПОДАРКОВ В ЛИЧНЫЕ СООБЩЕНИЯ"""
-    logger.info("🎁 Запуск детектора ВХОДЯЩИХ подарков в ЛС...")
-    logger.info("🎯 Цель: Детектировать когда МНЕ присылают подарки и отвечать отправителю")
+    """ПРАВИЛЬНЫЙ ДЕТЕКТОР TELEGRAM STAR GIFTS используя РЕАЛЬНЫЕ API методы"""
+    logger.info("🎁 Запуск НАСТОЯЩЕГО детектора Star Gifts с Pyrogram Raw API...")
     
-    # Получаем информацию о себе (владельце бота)
+    from pyrogram import filters
+    from pyrogram.raw import functions, types
+    from pyrogram.handlers import MessageHandler, RawUpdateHandler
+    
     me = await client.get_me()
     my_user_id = me.id
     logger.info(f"👤 Мой ID: {my_user_id} (@{me.username})")
     
-    @client.on_message()
-    async def handle_incoming_messages(client, message):
-        """Обрабатывает ВСЕ входящие сообщения для поиска подарков"""
+    # ПРАВИЛЬНЫЙ обработчик RAW UPDATES для Star Gifts
+    async def handle_raw_update(client, update, users, chats):
+        """Обрабатывает RAW updates для поиска Star Gifts"""
         try:
-            # ЛОГИРУЕМ АБСОЛЮТНО ВСЕ СООБЩЕНИЯ для диагностики
-            chat_type = getattr(message.chat, 'type', 'unknown') if message.chat else 'no_chat'
-            from_user_id = message.from_user.id if message.from_user else 'no_user'
+            update_type = type(update).__name__
+            logger.info(f"🔍 RAW UPDATE: {update_type}")
             
-            logger.info(f"🔍 ЛЮБОЕ СООБЩЕНИЕ: chat_type={chat_type}, from_user={from_user_id}, my_id={my_user_id}")
-            
-            # Проверяем что это ЛИЧНОЕ сообщение (не группа)
-            if not message.chat or message.chat.type != "private":
-                logger.info(f"❌ Игнорируем не-ЛС: chat_type={chat_type}")
-                return  # Игнорируем групповые чаты
-            
-            # Проверяем что сообщение НЕ от меня (входящее)
-            if not message.from_user or message.from_user.id == my_user_id:
-                logger.info(f"❌ Игнорируем свое сообщение: from_user_id={from_user_id}")
-                return  # Игнорируем свои сообщения
-            
-            sender_id = message.from_user.id
-            sender_username = message.from_user.username or "N/A"
-            
-            logger.info(f"📨 ВХОДЯЩЕЕ ЛС от @{sender_username} (ID: {sender_id})")
-            logger.info(f"📝 Текст: {getattr(message, 'text', 'N/A')}")
-            
-            # ЛОГИРУЕМ ВСЕ АТРИБУТЫ СООБЩЕНИЯ
-            logger.info(f"🔍 Атрибуты сообщения:")
-            logger.info(f"  - message_id: {getattr(message, 'message_id', 'N/A')}")
-            logger.info(f"  - service: {getattr(message, 'service', 'N/A')}")
-            logger.info(f"  - action: {getattr(message, 'action', 'N/A')}")
-            logger.info(f"  - media: {getattr(message, 'media', 'N/A')}")
-            logger.info(f"  - caption: {getattr(message, 'caption', 'N/A')}")
-            
-            # ДЕТЕКТИРУЕМ ПОДАРКИ В СООБЩЕНИИ
-            gift_detected = await detect_gift_in_message(message)
-            
-            if gift_detected:
-                logger.info(f"🎁 ПОДАРОК ОБНАРУЖЕН в сообщении от @{sender_username}!")
+            # Ищем UpdateNewMessage с подарками
+            if hasattr(update, 'message') and update.message:
+                message = update.message
+                message_type = type(message).__name__
+                logger.info(f"📨 MESSAGE TYPE: {message_type}")
                 
-                # Сохраняем в историю
-                if "gifts_history" not in detector_status:
-                    detector_status["gifts_history"] = []
-                
-                detector_status["gifts_history"].append({
-                    "gift_info": gift_detected,
-                    "timestamp": datetime.now().isoformat(),
-                    "message_id": message.message_id,
-                    "sender_id": sender_id,
-                    "sender_username": sender_username
-                })
-                
-                detector_status["gifts_found"] = detector_status.get("gifts_found", 0) + 1
-                logger.info(f"📊 Всего подарков получено: {detector_status['gifts_found']}")
-                
-                # ОТВЕЧАЕМ ОТПРАВИТЕЛЮ
-                await send_gift_thank_you_response(client, message, gift_detected)
-            else:
-                logger.info(f"❌ Подарок НЕ найден в сообщении от @{sender_username}")
-            
-        except Exception as e:
-            logger.error(f"Ошибка в handle_incoming_messages: {e}")
-    
-    async def detect_gift_in_message(message):
-        """Детектирует подарки в сообщении - ВСЕ возможные способы"""
-        try:
-            logger.info("🔍 НАЧИНАЕМ АГРЕССИВНЫЙ АНАЛИЗ ПОДАРКОВ...")
-            
-            # МЕТОД 1: Service Message (самый надежный для подарков)
-            if hasattr(message, 'service') and message.service:
-                service_type = type(message.service).__name__
-                logger.info(f"🔧 Service Message найден: {service_type}")
-                logger.info(f"🔧 Service данные: {str(message.service)}")
-                
-                # Проверяем типы связанные с подарками (РАСШИРЕННЫЙ СПИСОК)
-                gift_service_types = [
-                    'MessageServiceStarGift', 'MessageServiceGiftPremium', 'MessageServiceGift',
-                    'StarGift', 'GiftPremium', 'Gift', 'star_gift', 'gift_premium'
-                ]
-                
-                service_str = str(service_type).lower()
-                for gift_type in gift_service_types:
-                    if gift_type.lower() in service_str:
-                        logger.info(f"🎁 ПОДАРОК найден в Service Message! Тип: {gift_type}")
+                # Проверяем service messages для подарков
+                if hasattr(message, 'action') and message.action:
+                    action_type = type(message.action).__name__
+                    logger.info(f"🎬 ACTION TYPE: {action_type}")
+                    
+                    # STAR GIFTS DETECTION
+                    if 'gift' in action_type.lower() or 'star' in action_type.lower():
+                        logger.info(f"🎁 STAR GIFT НАЙДЕН! Action: {action_type}")
                         
-                        return {
-                            "type": "service_gift",
-                            "source": "service_message",
-                            "details": {
-                                "service_type": service_type,
-                                "service_data": str(message.service),
-                                "gift_type": "Service Message Gift",
-                                "matched_pattern": gift_type
-                            }
-                        }
+                        # Получаем детали подарка
+                        gift_details = await extract_star_gift_details(message.action)
+                        
+                        # Сохраняем в историю
+                        if "gifts_history" not in detector_status:
+                            detector_status["gifts_history"] = []
+                        
+                        detector_status["gifts_history"].append({
+                            "gift_info": gift_details,
+                            "timestamp": datetime.now().isoformat(),
+                            "message_id": getattr(message, 'id', 'unknown'),
+                            "action_type": action_type,
+                            "raw_action": str(message.action)
+                        })
+                        
+                        detector_status["gifts_found"] = detector_status.get("gifts_found", 0) + 1
+                        logger.info(f"📊 Всего Star Gifts найдено: {detector_status['gifts_found']}")
+                        
+                        # Отправляем ответ если это личное сообщение
+                        if hasattr(message, 'peer_id') and hasattr(message.peer_id, 'user_id'):
+                            await send_star_gift_response(client, message.peer_id.user_id, gift_details)
                 
-                # Если не нашли точное совпадение, но есть service - тоже логируем
-                if 'gift' in service_str or 'star' in service_str:
-                    logger.info(f"🎁 ВОЗМОЖНЫЙ ПОДАРОК в Service (нечеткое совпадение): {service_type}")
+                # Проверяем media для подарков
+                if hasattr(message, 'media') and message.media:
+                    media_type = type(message.media).__name__
+                    logger.info(f"🖼️ MEDIA TYPE: {media_type}")
                     
-                    return {
-                        "type": "possible_service_gift",
-                        "source": "service_message_fuzzy",
-                        "details": {
-                            "service_type": service_type,
-                            "service_data": str(message.service),
-                            "gift_type": "Possible Service Gift"
-                        }
-                    }
-            
-            # МЕТОД 2: Action (MessageAction для подарков)
-            if hasattr(message, 'action') and message.action:
-                action_type = type(message.action).__name__
-                logger.info(f"⚡ Action: {action_type}")
-                
-                if 'Gift' in action_type or 'Star' in action_type:
-                    logger.info(f"🎁 ПОДАРОК найден в Action!")
-                    
-                    # Извлекаем детальную информацию о подарке
-                    gift_details = await extract_gift_details_from_action(message.action)
-                    
-                    return {
-                        "type": "action_gift",
-                        "source": "message_action",
-                        "details": gift_details
-                    }
-            
-            # МЕТОД 3: Media (для анимированных подарков)
-            if hasattr(message, 'media') and message.media:
-                media_type = type(message.media).__name__
-                logger.info(f"🖼️ Media: {media_type}")
-                
-                if 'Gift' in media_type or 'Star' in media_type:
-                    logger.info(f"🎁 ПОДАРОК найден в Media!")
-                    
-                    return {
-                        "type": "media_gift",
-                        "source": "message_media",
-                        "details": {
+                    if 'gift' in media_type.lower() or 'star' in media_type.lower():
+                        logger.info(f"🎁 STAR GIFT в MEDIA найден! Media: {media_type}")
+                        
+                        gift_details = await extract_star_gift_from_media(message.media)
+                        
+                        if "gifts_history" not in detector_status:
+                            detector_status["gifts_history"] = []
+                        
+                        detector_status["gifts_history"].append({
+                            "gift_info": gift_details,
+                            "timestamp": datetime.now().isoformat(),
+                            "message_id": getattr(message, 'id', 'unknown'),
                             "media_type": media_type,
-                            "media_data": str(message.media),
-                            "gift_type": "Media Gift"
-                        }
-                    }
+                            "raw_media": str(message.media)
+                        })
+                        
+                        detector_status["gifts_found"] = detector_status.get("gifts_found", 0) + 1
+                        
+        except Exception as e:
+            logger.error(f"Ошибка в handle_raw_update: {e}")
+    
+    # ПРАВИЛЬНЫЙ обработчик ОБЫЧНЫХ сообщений для дополнительной детекции
+    async def handle_message(client, message):
+        """Обрабатывает обычные сообщения для поиска подарков"""
+        try:
+            # Только личные сообщения
+            if message.chat.type != "private":
+                return
             
-            # МЕТОД 4: Текстовые паттерны (уведомления о подарках) - МАКСИМАЛЬНО АГРЕССИВНО
+            # Не от себя
+            if message.from_user and message.from_user.id == my_user_id:
+                return
+            
+            sender_id = message.from_user.id if message.from_user else "unknown"
+            logger.info(f"📨 ОБЫЧНОЕ ЛС от {sender_id}")
+            
+            # Проверяем текст на подарочные паттерны
             text_to_check = ""
-            if hasattr(message, 'text') and message.text:
+            if message.text:
                 text_to_check += message.text.lower()
-            if hasattr(message, 'caption') and message.caption:
+            if message.caption:
                 text_to_check += " " + message.caption.lower()
             
             if text_to_check:
-                logger.info(f"🔍 Проверяем текст на подарки: '{text_to_check}'")
-                
-                # РАСШИРЕННЫЕ паттерны подарков в тексте
                 gift_patterns = [
                     'подарил', 'gift', 'star', 'звезд', 'подарок', 'подарки',
                     'коллекционный', 'лимитированный', 'редкий', 'мишка', 'bear',
-                    '⭐', '🎁', '🌟', 'stars', 'premium', 'улучшенный',
-                    'sent you', 'отправил', 'прислал', 'дарит'
+                    '⭐', '🎁', '🌟', 'stars', 'premium', 'улучшенный'
                 ]
                 
                 found_patterns = [pattern for pattern in gift_patterns if pattern in text_to_check]
                 if found_patterns:
-                    logger.info(f"🎁 ПОДАРОЧНЫЕ ПАТТЕРНЫ найдены: {found_patterns}")
+                    logger.info(f"🎁 ПОДАРОЧНЫЕ ПАТТЕРНЫ в тексте: {found_patterns}")
                     
-                    return {
-                        "type": "text_gift",
-                        "source": "text_patterns",
-                        "details": {
-                            "text": text_to_check,
-                            "patterns_found": found_patterns,
-                            "gift_type": "Text Pattern Gift"
-                        }
+                    gift_details = {
+                        "type": "text_pattern_gift",
+                        "patterns": found_patterns,
+                        "text": text_to_check[:200]  # Первые 200 символов
                     }
-                else:
-                    logger.info(f"❌ Подарочные паттерны НЕ найдены в тексте")
-            
-            # МЕТОД 5: Проверяем все атрибуты сообщения на наличие gift/star
-            message_attrs = dir(message)
-            gift_attrs = [attr for attr in message_attrs if 'gift' in attr.lower() or 'star' in attr.lower()]
-            
-            if gift_attrs:
-                logger.info(f"🎁 ПОДАРОЧНЫЕ АТРИБУТЫ найдены: {gift_attrs}")
-                
-                gift_data = {}
-                for attr in gift_attrs:
-                    try:
-                        value = getattr(message, attr)
-                        if value:
-                            gift_data[attr] = str(value)
-                    except:
-                        pass
-                
-                if gift_data:
-                    return {
-                        "type": "attribute_gift",
-                        "source": "message_attributes",
-                        "details": {
-                            "gift_attributes": gift_data,
-                            "gift_type": "Message Attribute Gift"
-                        }
-                    }
-            
-            return None  # Подарок не найден
-            
+                    
+                    if "gifts_history" not in detector_status:
+                        detector_status["gifts_history"] = []
+                    
+                    detector_status["gifts_history"].append({
+                        "gift_info": gift_details,
+                        "timestamp": datetime.now().isoformat(),
+                        "message_id": message.message_id,
+                        "sender_id": sender_id,
+                        "detection_method": "text_patterns"
+                    })
+                    
+                    detector_status["gifts_found"] = detector_status.get("gifts_found", 0) + 1
+                    
+                    # Отвечаем отправителю
+                    await send_star_gift_response(client, sender_id, gift_details)
+                    
         except Exception as e:
-            logger.error(f"Ошибка в detect_gift_in_message: {e}")
-            return None
+            logger.error(f"Ошибка в handle_message: {e}")
     
-    async def extract_gift_details_from_action(action):
-        """Извлекает детальную информацию о подарке из action"""
-        try:
-            details = {
-                "action_type": type(action).__name__,
-                "gift_type": "Action Star Gift"
-            }
-            
-            # Пытаемся извлечь все возможные поля подарка
-            gift_fields = [
-                'id', 'stars', 'limited', 'sold_out', 'convert_stars',
-                'first_sale_date', 'last_sale_date', 'total_count',
-                'remaining_count', 'model', 'backdrop', 'symbol',
-                'can_upgrade', 'can_transfer', 'rarity'
-            ]
-            
-            for field in gift_fields:
-                if hasattr(action, field):
-                    value = getattr(action, field)
-                    details[field] = value
-                    logger.info(f"  📊 {field}: {value}")
-                elif hasattr(action, 'gift') and hasattr(action.gift, field):
-                    value = getattr(action.gift, field)
-                    details[field] = value
-                    logger.info(f"  📊 gift.{field}: {value}")
-            
-            return details
-            
-        except Exception as e:
-            logger.error(f"Ошибка извлечения деталей подарка: {e}")
-            return {"action_type": str(type(action).__name__), "gift_type": "Action Gift"}
+    # Добавляем обработчики
+    raw_handler = RawUpdateHandler(handle_raw_update)
+    client.add_handler(raw_handler)
     
-    async def send_gift_thank_you_response(client, message, gift_info):
-        """Отправляет благодарность отправителю подарка"""
-        try:
-            details = gift_info['details']
-            
-            # Формируем красивый ответ
-            response_text = f"""🎁 <b>СПАСИБО ЗА ПОДАРОК!</b>
-
-⭐ <b>Тип подарка:</b> {details.get('gift_type', 'Unknown')}
-🔍 <b>Источник:</b> {gift_info['source']}
-🆔 <b>ID:</b> {details.get('id', 'N/A')}
-⭐ <b>Звезды:</b> {details.get('stars', 'N/A')}
-🏆 <b>Редкий:</b> {'Да' if details.get('limited') else 'Нет'}
-🏠 <b>Модель:</b> {details.get('model', 'N/A')}
-🖼️ <b>Фон:</b> {details.get('backdrop', 'N/A')}
-🔣 <b>Символ:</b> {details.get('symbol', 'N/A')}
-
-⏰ <b>Получено:</b> {datetime.now().strftime('%H:%M:%S')}
-
-🌟 <b>Большое спасибо за подарок!</b> 🌟
-
-<i>Это автоматический ответ от детектора подарков</i>"""
-
-            # Отправляем ответ отправителю
-            await client.send_message(
-                chat_id=message.from_user.id,
-                text=response_text,
-                parse_mode="HTML"
-            )
-            
-            logger.info(f"✅ Отправлена благодарность за подарок пользователю @{message.from_user.username}")
-            
-        except Exception as e:
-            logger.error(f"Ошибка отправки благодарности: {e}")
+    message_handler = MessageHandler(filters.private, handle_message)
+    client.add_handler(message_handler)
     
-    logger.info("✅ Детектор ВХОДЯЩИХ подарков в ЛС запущен!")
-    logger.info("🎯 Готов детектировать подарки и отвечать отправителям!")
+    logger.info("✅ НАСТОЯЩИЙ детектор Star Gifts запущен с RAW API!")
+
+async def extract_star_gift_details(action):
+    """Извлекает детали Star Gift из action объекта"""
+    try:
+        action_type = type(action).__name__
+        details = {
+            "action_type": action_type,
+            "raw_action": str(action)
+        }
+        
+        # Пытаемся извлечь специфичные поля для подарков
+        if hasattr(action, 'gift'):
+            gift = action.gift
+            details["gift_object"] = str(gift)
+            
+            # Ищем поля Star Gift
+            for field in ['id', 'sticker', 'star_count', 'upgrade_star_count', 
+                         'total_count', 'remaining_count', 'first_sale_date',
+                         'last_sale_date', 'rarity', 'upgrade', 'transfer', 
+                         'model', 'backdrop', 'symbol']:
+                if hasattr(gift, field):
+                    details[field] = getattr(gift, field)
+        
+        # Дополнительные поля из action
+        for field in ['user_id', 'peer', 'random_id', 'currency', 'amount']:
+            if hasattr(action, field):
+                details[field] = getattr(action, field)
+        
+        return details
+        
+    except Exception as e:
+        logger.error(f"Ошибка в extract_star_gift_details: {e}")
+        return {"error": str(e), "action_type": type(action).__name__}
+
+async def extract_star_gift_from_media(media):
+    """Извлекает детали Star Gift из media объекта"""
+    try:
+        media_type = type(media).__name__
+        details = {
+            "media_type": media_type,
+            "raw_media": str(media)
+        }
+        
+        # Ищем поля связанные с подарками
+        for field in ['gift', 'sticker', 'document', 'photo', 'animation']:
+            if hasattr(media, field):
+                obj = getattr(media, field)
+                if obj:
+                    details[field] = str(obj)
+                    
+                    # Если это подарок, ищем его детали
+                    if field == 'gift':
+                        for gift_field in ['id', 'star_count', 'rarity', 'upgrade', 'transfer']:
+                            if hasattr(obj, gift_field):
+                                details[gift_field] = getattr(obj, gift_field)
+        
+        return details
+        
+    except Exception as e:
+        logger.error(f"Ошибка в extract_star_gift_from_media: {e}")
+        return {"error": str(e), "media_type": type(media).__name__}
+
+async def send_star_gift_response(client, user_id, gift_details):
+    """Отправляет ответ о полученном Star Gift"""
+    try:
+        # Формируем красивое сообщение
+        response_text = "🎁 <b>STAR GIFT ПОЛУЧЕН!</b>\n\n"
+        
+        if gift_details.get("action_type"):
+            response_text += f"🎬 <b>Тип:</b> <code>{gift_details['action_type']}</code>\n"
+        
+        if gift_details.get("media_type"):
+            response_text += f"🖼️ <b>Медиа:</b> <code>{gift_details['media_type']}</code>\n"
+        
+        if gift_details.get("id"):
+            response_text += f"🆔 <b>ID подарка:</b> <code>{gift_details['id']}</code>\n"
+        
+        if gift_details.get("star_count"):
+            response_text += f"⭐ <b>Звезд:</b> <code>{gift_details['star_count']}</code>\n"
+        
+        if gift_details.get("rarity"):
+            response_text += f"💎 <b>Редкость:</b> <code>{gift_details['rarity']}</code>\n"
+        
+        if gift_details.get("patterns"):
+            response_text += f"🔍 <b>Найденные паттерны:</b> <code>{', '.join(gift_details['patterns'])}</code>\n"
+        
+        if gift_details.get("text"):
+            response_text += f"📝 <b>Текст:</b> <i>{gift_details['text'][:100]}...</i>\n"
+        
+        response_text += f"\n🕐 <b>Время:</b> {datetime.now().strftime('%H:%M:%S')}"
+        response_text += f"\n🤖 <b>Детектор:</b> Pyrogram Raw API"
+        
+        # Отправляем сообщение
+        await client.send_message(
+            chat_id=user_id,
+            text=response_text,
+            parse_mode="html"
+        )
+        
+        logger.info(f"✅ Ответ о Star Gift отправлен пользователю {user_id}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка в send_star_gift_response: {e}")
 
 async def check_for_gifts(message):
     """Проверяет сообщение на наличие STAR GIFTS согласно Telegram API"""
@@ -349,7 +295,7 @@ async def check_for_gifts(message):
         # Проверяем MessageMediaStarGift
         if 'star' in media_type.lower() and 'gift' in media_type.lower():
             logger.info(f"⭐ STAR GIFT MEDIA найден: {media_type}")
-            return await extract_star_gift_from_media(message.media, media_type)
+            return await extract_star_gift_from_media(message.media)
         
         # Проверяем на подарочные документы/анимации
         if hasattr(message.media, 'document'):
@@ -476,12 +422,12 @@ async def extract_star_gift_from_action(action, action_type):
             "details": {"gift_type": "Star Gift from Action", "raw_data": str(action)}
         }
 
-async def extract_star_gift_from_media(media, media_type):
+async def extract_star_gift_from_media(media):
     """Извлекает Star Gift из media поля"""
     try:
         details = {
             "gift_type": "Star Gift from Media",
-            "media_type": media_type,
+            "media_type": type(media).__name__,
             "raw_data": str(media)
         }
         
