@@ -2,13 +2,33 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import logging
+from datetime import datetime
+import asyncio
 
 app = FastAPI()
+
+# Настройка логирования
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Простые переменные состояния
-detector_status = {"running": False, "gifts_found": 0, "uptime": "0"}
-auth_session = {}
+# Глобальные переменные состояния
+detector_status = {
+    "running": False,
+    "status": "Неактивен",
+    "gifts_found": 0,
+    "uptime": "0",
+    "start_time": None,
+    "history": []
+}
+
+auth_session = {
+    "client": None,
+    "config": None,
+    "awaiting_sms": False,
+    "awaiting_password": False
+}
+
+gift_history = []
 
 class TelegramConfig(BaseModel):
     api_id: str
@@ -162,13 +182,183 @@ async def get_status():
 
 @app.post("/detector/start")
 async def start_detector(config: TelegramConfig):
-    # Простая заглушка
-    return {"message": "SMS отправлен (заглушка)", "status": "sms_required"}
+    if detector_status["running"]:
+        raise HTTPException(status_code=400, detail="Детектор уже запущен")
+    
+    # Валидация входных данных
+    if not config.api_id or not config.api_hash or not config.phone_number:
+        raise HTTPException(status_code=400, detail="Все поля обязательны для заполнения")
+    
+    if not config.api_id.isdigit():
+        raise HTTPException(status_code=400, detail="API ID должен содержать только цифры")
+        
+    if len(config.api_hash) < 32:
+        raise HTTPException(status_code=400, detail="API Hash слишком короткий (должен быть 32+ символов)")
+        
+    if not config.phone_number.startswith('+'):
+        raise HTTPException(status_code=400, detail="Номер телефона должен начинаться с +")
+        
+    logger.info(f"Валидация пройдена: API ID длина={len(config.api_id)}, API Hash длина={len(config.api_hash)}, Phone={config.phone_number}")
+    
+    try:
+        logger.info("Начинаем процесс авторизации...")
+        
+        try:
+            from pyrogram import Client
+            from pyrogram.errors import SessionPasswordNeeded
+            logger.info("Pyrogram импортирован успешно")
+        except ImportError as e:
+            logger.error(f"Ошибка импорта Pyrogram: {e}")
+            raise HTTPException(status_code=500, detail=f"Pyrogram не установлен: {str(e)}")
+        
+        # Создаем папку для сессий
+        import os
+        import tempfile
+        
+        sessions_dir = os.path.join(tempfile.gettempdir(), "telegram_sessions")
+        if not os.path.exists(sessions_dir):
+            os.makedirs(sessions_dir, mode=0o755)
+            logger.info(f"Создана папка сессий: {sessions_dir}")
+        
+        session_name = f"gift_detector_{config.phone_number.replace('+', '').replace(' ', '')}"
+        session_file = os.path.join(sessions_dir, session_name)
+        logger.info(f"Файл сессии: {session_file}")
+        
+        # Проверяем права записи
+        try:
+            test_file = os.path.join(sessions_dir, "test_write")
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+            logger.info("Права записи проверены успешно")
+        except Exception as e:
+            logger.error(f"Нет прав записи: {e}")
+            session_file = ":memory:"
+            sessions_dir = None
+            logger.info("Используем сессию в памяти")
+        
+        # Создаем клиент
+        logger.info("Создаем Pyrogram клиент...")
+        if session_file == ":memory:":
+            client = Client(
+                name=session_name,
+                api_id=int(config.api_id),
+                api_hash=config.api_hash,
+                phone_number=config.phone_number,
+                in_memory=True
+            )
+        else:
+            client = Client(
+                name=session_file,
+                api_id=int(config.api_id),
+                api_hash=config.api_hash,
+                phone_number=config.phone_number,
+                workdir=sessions_dir
+            )
+        
+        # Сохраняем в auth_session
+        auth_session["client"] = client
+        auth_session["config"] = config
+        
+        # Подключаемся
+        logger.info("Подключаемся к Telegram...")
+        await client.connect()
+        logger.info("Подключение успешно")
+        
+        # Проверяем существующую авторизацию
+        try:
+            me = await client.get_me()
+            if me:
+                logger.info(f"Найдена действующая сессия для {me.first_name}")
+                auth_session["awaiting_sms"] = False
+                # Запускаем детектор сразу
+                return {"message": "Сессия найдена, детектор запущен!", "status": "success"}
+        except Exception as e:
+            logger.info(f"Сохраненная сессия недействительна: {e}")
+        
+        # Отправляем SMS
+        logger.info(f"Отправляем SMS код на {config.phone_number}...")
+        sent_code = await client.send_code(config.phone_number)
+        
+        auth_session["awaiting_sms"] = True
+        auth_session["sent_code"] = sent_code
+        auth_session["phone_number"] = config.phone_number
+        
+        logger.info(f"SMS код успешно отправлен на {config.phone_number}")
+        return {
+            "message": f"SMS код отправлен на {config.phone_number}. Введите его в поле ниже.", 
+            "status": "sms_required"
+        }
+        
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        if auth_session.get("client"):
+            try:
+                await auth_session["client"].disconnect()
+            except:
+                pass
+            auth_session["client"] = None
+        raise HTTPException(status_code=500, detail=f"Ошибка: {str(e)}")
 
 @app.post("/detector/complete_auth")
 async def complete_auth(auth_data: dict):
-    # Простая заглушка
-    return {"message": "Авторизация успешна (заглушка)", "status": "success"}
+    if not auth_session.get("client"):
+        raise HTTPException(status_code=400, detail="Клиент не найден. Сначала нажмите 'Запустить детектор'")
+        
+    logger.info("Начинаем подтверждение авторизации...")
+    
+    try:
+        from pyrogram.errors import SessionPasswordNeeded, BadRequest
+        
+        client = auth_session["client"]
+        sms_code = auth_data.get("sms_code")
+        password = auth_data.get("password", "")
+        
+        if not sms_code:
+            raise HTTPException(status_code=400, detail="SMS код обязателен")
+        
+        logger.info(f"Попытка авторизации с SMS кодом: {sms_code}")
+        
+        try:
+            # Пытаемся войти с SMS кодом
+            await client.sign_in(auth_session["config"].phone_number, sms_code)
+            logger.info("Авторизация по SMS успешна!")
+            
+        except SessionPasswordNeeded:
+            logger.info("Требуется пароль 2FA")
+            if not password:
+                return {
+                    "message": "Требуется пароль 2FA. Введите пароль и повторите.", 
+                    "status": "password_required"
+                }
+            
+            await client.check_password(password)
+            logger.info("Авторизация по 2FA успешна!")
+        
+        # Авторизация успешна
+        auth_session["awaiting_sms"] = False
+        detector_status["running"] = True
+        detector_status["status"] = "Активен"
+        detector_status["start_time"] = datetime.now()
+        
+        logger.info("Детектор запущен успешно!")
+        return {
+            "message": "✅ Авторизация успешна! Детектор запущен и готов к работе.", 
+            "status": "success"
+        }
+        
+    except BadRequest as e:
+        logger.error(f"Неверный SMS код: {e}")
+        return {
+            "message": f"Неверный SMS код: {str(e)}", 
+            "status": "error"
+        }
+    except Exception as e:
+        logger.error(f"Ошибка авторизации: {e}")
+        return {
+            "message": f"Ошибка авторизации: {str(e)}", 
+            "status": "error"
+        }
 
 @app.post("/detector/stop")
 async def stop_detector():
