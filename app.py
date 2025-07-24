@@ -425,11 +425,14 @@ async def start_detector(config: TelegramConfig):
             logger.error(f"Неожиданная ошибка при импорте: {e}")
             raise HTTPException(status_code=500, detail=f"Ошибка импорта: {str(e)}")
         
-        # Создаем папку для сессий
+        # Создаем папку для сессий с правильными правами
         import os
-        sessions_dir = "sessions"
+        import tempfile
+        
+        # Используем временную папку с правами записи
+        sessions_dir = os.path.join(tempfile.gettempdir(), "telegram_sessions")
         if not os.path.exists(sessions_dir):
-            os.makedirs(sessions_dir)
+            os.makedirs(sessions_dir, mode=0o755)
             logger.info(f"Создана папка сессий: {sessions_dir}")
         
         # Имя сессии на основе номера телефона
@@ -437,17 +440,43 @@ async def start_detector(config: TelegramConfig):
         session_file = os.path.join(sessions_dir, session_name)
         logger.info(f"Файл сессии: {session_file}")
         
+        # Проверяем права записи
+        try:
+            test_file = os.path.join(sessions_dir, "test_write")
+            with open(test_file, 'w') as f:
+                f.write("test")
+            os.remove(test_file)
+            logger.info("Права записи в папку сессий проверены успешно")
+        except Exception as e:
+            logger.error(f"Нет прав записи в папку сессий: {e}")
+            # Используем память для сессии
+            session_file = ":memory:"
+            sessions_dir = None
+            logger.info("Используем сессию в памяти")
+        
         # Создаем клиент с сохранением сессии
         logger.info("Создаем Pyrogram клиент...")
         try:
-            client = Client(
-                name=session_file,
-                api_id=int(config.api_id),
-                api_hash=config.api_hash,
-                phone_number=config.phone_number,
-                workdir=sessions_dir
-            )
-            logger.info("Pyrogram клиент создан успешно")
+            if session_file == ":memory:":
+                # Сессия в памяти
+                client = Client(
+                    name=session_name,
+                    api_id=int(config.api_id),
+                    api_hash=config.api_hash,
+                    phone_number=config.phone_number,
+                    in_memory=True
+                )
+                logger.info("Pyrogram клиент создан с сессией в памяти")
+            else:
+                # Сессия в файле
+                client = Client(
+                    name=session_file,
+                    api_id=int(config.api_id),
+                    api_hash=config.api_hash,
+                    phone_number=config.phone_number,
+                    workdir=sessions_dir
+                )
+                logger.info("Pyrogram клиент создан с файловой сессией")
         except Exception as e:
             logger.error(f"Ошибка создания Pyrogram клиента: {e}")
             raise Exception(f"Ошибка создания клиента: {str(e)}")
@@ -492,8 +521,8 @@ async def start_detector(config: TelegramConfig):
             logger.error(f"Ошибка отправки SMS: {e}")
             try:
                 await client.disconnect()
-            except:
-                pass
+            except Exception as disconnect_error:
+                logger.warning(f"Ошибка при отключении клиента: {disconnect_error}")
             auth_session["client"] = None
             raise Exception(f"Ошибка отправки SMS: {str(e)}")
             
@@ -502,7 +531,10 @@ async def start_detector(config: TelegramConfig):
     except Exception as e:
         logger.error(f"Ошибка при отправке SMS: {e}")
         if auth_session["client"]:
-            await auth_session["client"].disconnect()
+            try:
+                await auth_session["client"].disconnect()
+            except Exception as disconnect_error:
+                logger.warning(f"Ошибка при отключении клиента: {disconnect_error}")
             auth_session["client"] = None
         raise HTTPException(status_code=500, detail=f"Ошибка: {str(e)}")
 
@@ -611,23 +643,30 @@ def get_gift_history():
 def get_saved_sessions():
     """Получить список сохраненных сессий"""
     import os
-    sessions_dir = "sessions"
+    import tempfile
+    from datetime import datetime
+    
+    sessions_dir = os.path.join(tempfile.gettempdir(), "telegram_sessions")
     sessions = []
     
     if os.path.exists(sessions_dir):
-        for file in os.listdir(sessions_dir):
-            if file.endswith('.session'):
-                session_name = file.replace('.session', '')
-                file_path = os.path.join(sessions_dir, file)
-                file_size = os.path.getsize(file_path)
-                modified_time = os.path.getmtime(file_path)
-                
-                sessions.append({
-                    "name": session_name,
-                    "size": file_size,
-                    "modified": datetime.fromtimestamp(modified_time).isoformat(),
-                    "phone": session_name.replace('gift_detector_', '+').replace('gift_detector', 'unknown')
-                })
+        try:
+            for file in os.listdir(sessions_dir):
+                if file.endswith('.session'):
+                    session_name = file.replace('.session', '')
+                    file_path = os.path.join(sessions_dir, file)
+                    file_size = os.path.getsize(file_path)
+                    modified_time = os.path.getmtime(file_path)
+                    
+                    sessions.append({
+                        "name": session_name,
+                        "size": file_size,
+                        "modified": datetime.fromtimestamp(modified_time).isoformat(),
+                        "phone": session_name.replace('gift_detector_', '+').replace('gift_detector', 'unknown')
+                    })
+        except Exception as e:
+            logger.error(f"Ошибка чтения сессий: {e}")
+            return {"sessions": [], "error": str(e)}
     
     return {"sessions": sessions}
 
@@ -635,7 +674,9 @@ def get_saved_sessions():
 def delete_session(session_name: str):
     """Удалить сохраненную сессию"""
     import os
-    sessions_dir = "sessions"
+    import tempfile
+    
+    sessions_dir = os.path.join(tempfile.gettempdir(), "telegram_sessions")
     session_file = os.path.join(sessions_dir, f"{session_name}.session")
     
     if os.path.exists(session_file):
