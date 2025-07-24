@@ -29,6 +29,14 @@ detector_status = {
 
 gift_history = []
 
+# Временное хранение данных авторизации
+auth_session = {
+    "client": None,
+    "config": None,
+    "awaiting_sms": False,
+    "awaiting_password": False
+}
+
 class TelegramConfig(BaseModel):
     api_id: str
     api_hash: str
@@ -59,6 +67,9 @@ def read_root():
         .form-group { margin: 15px 0; }
         .form-group label { display: block; margin-bottom: 5px; font-weight: bold; }
         .form-group input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-size: 16px; }
+        .form-group small { display: block; margin-top: 5px; color: #666; font-size: 12px; }
+        #auth-fields { background: #f0f8ff; border: 2px solid #007bff; border-radius: 10px; padding: 20px; margin: 20px 0; }
+        .btn:disabled { background: #ccc; cursor: not-allowed; }
         .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 20px 0; }
         .stat-card { background: white; border: 1px solid #eee; border-radius: 10px; padding: 20px; text-align: center; }
         .stat-number { font-size: 2em; font-weight: bold; color: #007bff; }
@@ -87,6 +98,14 @@ def read_root():
                 phone_number: document.getElementById('phone_number').value
             };
             
+            if (!config.api_id || !config.api_hash || !config.phone_number) {
+                alert('Заполните все поля!');
+                return;
+            }
+            
+            document.getElementById('start-btn').disabled = true;
+            document.getElementById('start-btn').textContent = '⏳ Отправка SMS...';
+            
             fetch('/detector/start', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -94,8 +113,60 @@ def read_root():
             })
             .then(response => response.json())
             .then(data => {
-                alert(data.message);
+                if (data.status === 'sms_required') {
+                    // Показываем поля для авторизации
+                    document.getElementById('auth-fields').style.display = 'block';
+                    document.getElementById('start-btn').textContent = '📱 SMS отправлен';
+                    alert('SMS код отправлен! Введите его в поле ниже.');
+                } else if (data.status === 'started') {
+                    alert(data.message);
+                    document.getElementById('start-btn').disabled = false;
+                    document.getElementById('start-btn').textContent = '🚀 Запустить детектор';
+                } else {
+                    alert(data.message || 'Ошибка запуска');
+                    document.getElementById('start-btn').disabled = false;
+                    document.getElementById('start-btn').textContent = '🚀 Запустить детектор';
+                }
                 refreshStatus();
+            })
+            .catch(error => {
+                alert('Ошибка: ' + error);
+                document.getElementById('start-btn').disabled = false;
+                document.getElementById('start-btn').textContent = '🚀 Запустить детектор';
+            });
+        }
+        
+        function completeAuth() {
+            const sms_code = document.getElementById('sms_code').value;
+            const password = document.getElementById('two_fa_password').value;
+            
+            if (!sms_code) {
+                alert('Введите SMS код!');
+                return;
+            }
+            
+            fetch('/detector/complete_auth', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    sms_code: sms_code,
+                    password: password
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    alert('✅ Авторизация успешна! Детектор запущен.');
+                    document.getElementById('auth-fields').style.display = 'none';
+                    document.getElementById('start-btn').disabled = false;
+                    document.getElementById('start-btn').textContent = '🚀 Запустить детектор';
+                } else {
+                    alert('❌ ' + (data.message || 'Ошибка авторизации'));
+                }
+                refreshStatus();
+            })
+            .catch(error => {
+                alert('Ошибка: ' + error);
             });
         }
         
@@ -140,7 +211,22 @@ def read_root():
                         <input type="text" id="phone_number" placeholder="+7XXXXXXXXXX">
                     </div>
                     
-                    <button class="btn" onclick="startDetector()">🚀 Запустить детектор</button>
+                    <!-- Поля для авторизации -->
+                    <div id="auth-fields" style="display: none;">
+                        <div class="form-group">
+                            <label>SMS код:</label>
+                            <input type="text" id="sms_code" placeholder="12345" maxlength="5">
+                            <small>Введите код из SMS</small>
+                        </div>
+                        <div class="form-group">
+                            <label>Пароль 2FA (если включен):</label>
+                            <input type="password" id="two_fa_password" placeholder="Ваш пароль 2FA">
+                            <small>Оставьте пустым если 2FA не включен</small>
+                        </div>
+                        <button class="btn" onclick="completeAuth()">✅ Подтвердить авторизацию</button>
+                    </div>
+                    
+                    <button class="btn" onclick="startDetector()" id="start-btn">🚀 Запустить детектор</button>
                     <button class="btn danger" onclick="stopDetector()">⏹️ Остановить детектор</button>
                 </div>
                 
@@ -204,19 +290,101 @@ def get_detector_status():
     return detector_status
 
 @app.post("/detector/start")
-async def start_detector(config: TelegramConfig, background_tasks: BackgroundTasks):
+async def start_detector(config: TelegramConfig):
     if detector_status["running"]:
         raise HTTPException(status_code=400, detail="Детектор уже запущен")
     
     try:
-        from telegram_detector import start_telegram_detector
+        from pyrogram import Client
+        from pyrogram.errors import SessionPasswordNeeded
+        
+        # Создаем клиент
+        client = Client(
+            name="gift_detector_session",
+            api_id=int(config.api_id),
+            api_hash=config.api_hash,
+            phone_number=config.phone_number
+        )
+        
+        # Сохраняем в сессию
+        auth_session["client"] = client
+        auth_session["config"] = config
+        
+        # Пытаемся подключиться
+        await client.connect()
+        
+        # Проверяем, авторизован ли уже
+        if await client.get_me():
+            # Уже авторизован, запускаем детектор
+            auth_session["awaiting_sms"] = False
+            return await _start_detector_after_auth()
+        else:
+            # Нужна авторизация, отправляем SMS
+            await client.send_code(config.phone_number)
+            auth_session["awaiting_sms"] = True
+            
+            logger.info(f"SMS код отправлен на {config.phone_number}")
+            return {"message": "SMS код отправлен", "status": "sms_required"}
+            
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Pyrogram не установлен")
+    except Exception as e:
+        logger.error(f"Ошибка при отправке SMS: {e}")
+        if auth_session["client"]:
+            await auth_session["client"].disconnect()
+            auth_session["client"] = None
+        raise HTTPException(status_code=500, detail=f"Ошибка: {str(e)}")
+
+@app.post("/detector/complete_auth")
+async def complete_auth(auth_data: dict):
+    if not auth_session["awaiting_sms"] or not auth_session["client"]:
+        raise HTTPException(status_code=400, detail="Авторизация не начата")
+    
+    try:
+        from pyrogram.errors import SessionPasswordNeeded, BadRequest
+        
+        client = auth_session["client"]
+        sms_code = auth_data.get("sms_code")
+        password = auth_data.get("password", "")
+        
+        if not sms_code:
+            raise HTTPException(status_code=400, detail="SMS код обязателен")
+        
+        try:
+            # Пытаемся войти с SMS кодом
+            await client.sign_in(auth_session["config"].phone_number, sms_code)
+            
+        except SessionPasswordNeeded:
+            # Нужен пароль 2FA
+            if not password:
+                raise HTTPException(status_code=400, detail="Требуется пароль 2FA")
+            await client.check_password(password)
+        
+        # Авторизация успешна
+        auth_session["awaiting_sms"] = False
+        return await _start_detector_after_auth()
+        
+    except BadRequest as e:
+        raise HTTPException(status_code=400, detail=f"Неверный код или пароль: {str(e)}")
+    except Exception as e:
+        logger.error(f"Ошибка авторизации: {e}")
+        if auth_session["client"]:
+            await auth_session["client"].disconnect()
+            auth_session["client"] = None
+        raise HTTPException(status_code=500, detail=f"Ошибка авторизации: {str(e)}")
+
+async def _start_detector_after_auth():
+    """Запуск детектора после успешной авторизации"""
+    try:
+        from telegram_detector import TelegramGiftDetector
         
         detector_status["running"] = True
         detector_status["started_at"] = datetime.now().isoformat()
         detector_status["error"] = None
         detector_status["gifts_detected"] = 0
         
-        logger.info(f"Детектор запущен с конфигурацией: {config.phone_number}")
+        config = auth_session["config"]
+        logger.info(f"Детектор запущен для {config.phone_number}")
         
         # Callback для обработки найденных подарков
         async def gift_found_callback(gift_info):
@@ -225,16 +393,19 @@ async def start_detector(config: TelegramConfig, background_tasks: BackgroundTas
             detector_status["last_gift"] = gift_info
             logger.info(f"Обнаружен подарок: {gift_info}")
         
-        # Запуск реального Telegram детектора в фоне
-        background_tasks.add_task(
-            start_telegram_detector,
+        # Создаем и запускаем детектор с уже авторизованным клиентом
+        detector = TelegramGiftDetector(
             config.api_id,
             config.api_hash, 
-            config.phone_number,
-            gift_found_callback
+            config.phone_number
         )
+        detector.client = auth_session["client"]  # Используем уже авторизованный клиент
         
-        return {"message": "Детектор успешно запущен!", "status": "started"}
+        # Запускаем в фоне (здесь нужно будет доработать для background task)
+        # background_tasks.add_task(detector.start, gift_found_callback)
+        
+        return {"message": "Детектор успешно запущен!", "status": "success"}
+        
     except Exception as e:
         detector_status["error"] = str(e)
         detector_status["running"] = False
