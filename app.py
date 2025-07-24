@@ -656,9 +656,9 @@ async def index():
         <script>
         function startDetector() {
             const config = {
-                api_id: document.getElementById('api_id').value,
-                api_hash: document.getElementById('api_hash').value,
-                phone_number: document.getElementById('phone_number').value
+                api_id: document.getElementById('api_id').value.trim(),
+                api_hash: document.getElementById('api_hash').value.trim(),
+                phone_number: document.getElementById('phone_number').value.trim()
             };
             
             if (!config.api_id || !config.api_hash || !config.phone_number) {
@@ -708,8 +708,8 @@ async def index():
         
         function completeAuth() {
             const authData = {
-                sms_code: document.getElementById('sms_code').value,
-                password: document.getElementById('two_fa_password').value
+                sms_code: document.getElementById('sms_code').value.trim(),
+                password: document.getElementById('two_fa_password').value.trim()
             };
             
             if (!authData.sms_code) {
@@ -872,6 +872,11 @@ async def start_detector(config: TelegramConfig):
         logger.warning("Детектор уже запущен")
         raise HTTPException(status_code=400, detail="Детектор уже запущен")
     
+    # Очищаем пробелы из всех полей
+    config.api_id = config.api_id.strip()
+    config.api_hash = config.api_hash.strip()
+    config.phone_number = config.phone_number.strip()
+    
     # Валидация входных данных
     logger.info(f"Валидируем данные: api_id={config.api_id}, api_hash={config.api_hash[:8]}..., phone={config.phone_number}")
     
@@ -880,7 +885,8 @@ async def start_detector(config: TelegramConfig):
         raise HTTPException(status_code=400, detail="Все поля обязательны для заполнения")
     
     if not config.api_id.isdigit():
-        raise HTTPException(status_code=400, detail="API ID должен содержать только цифры")
+        logger.error(f"API ID содержит не только цифры: '{config.api_id}'")
+        raise HTTPException(status_code=400, detail=f"API ID должен содержать только цифры. Получено: '{config.api_id}'")
         
     if len(config.api_hash) < 32:
         raise HTTPException(status_code=400, detail="API Hash слишком короткий (должен быть 32+ символов)")
