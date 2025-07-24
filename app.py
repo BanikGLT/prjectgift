@@ -403,40 +403,68 @@ async def start_detector(config: TelegramConfig):
     if detector_status["running"]:
         raise HTTPException(status_code=400, detail="Детектор уже запущен")
     
+    # Валидация входных данных
+    if not config.api_id or not config.api_hash or not config.phone_number:
+        raise HTTPException(status_code=400, detail="Все поля обязательны для заполнения")
+    
+    if not config.api_id.isdigit():
+        raise HTTPException(status_code=400, detail="API ID должен содержать только цифры")
+    
     try:
+        logger.info("Начинаем процесс авторизации...")
+        logger.info(f"API ID: {config.api_id}, Phone: {config.phone_number}")
+        
         from pyrogram import Client
         from pyrogram.errors import SessionPasswordNeeded
+        logger.info("Pyrogram импортирован успешно")
         
         # Создаем папку для сессий
         import os
         sessions_dir = "sessions"
         if not os.path.exists(sessions_dir):
             os.makedirs(sessions_dir)
+            logger.info(f"Создана папка сессий: {sessions_dir}")
         
         # Имя сессии на основе номера телефона
         session_name = f"gift_detector_{config.phone_number.replace('+', '').replace(' ', '')}"
         session_file = os.path.join(sessions_dir, session_name)
+        logger.info(f"Файл сессии: {session_file}")
         
         # Создаем клиент с сохранением сессии
-        client = Client(
-            name=session_file,
-            api_id=int(config.api_id),
-            api_hash=config.api_hash,
-            phone_number=config.phone_number,
-            workdir=sessions_dir
-        )
+        logger.info("Создаем Pyrogram клиент...")
+        try:
+            client = Client(
+                name=session_file,
+                api_id=int(config.api_id),
+                api_hash=config.api_hash,
+                phone_number=config.phone_number,
+                workdir=sessions_dir
+            )
+            logger.info("Pyrogram клиент создан успешно")
+        except Exception as e:
+            logger.error(f"Ошибка создания Pyrogram клиента: {e}")
+            raise Exception(f"Ошибка создания клиента: {str(e)}")
         
         # Сохраняем в сессию
         auth_session["client"] = client
         auth_session["config"] = config
+        logger.info("Данные сохранены в auth_session")
         
         # Пытаемся подключиться
-        await client.connect()
+        logger.info("Подключаемся к Telegram...")
+        try:
+            await client.connect()
+            logger.info("Подключение к Telegram успешно")
+        except Exception as e:
+            logger.error(f"Ошибка подключения к Telegram: {e}")
+            raise Exception(f"Ошибка подключения: {str(e)}")
         
         # Проверяем, авторизован ли уже (есть ли сохраненная сессия)
+        logger.info("Проверяем существующую авторизацию...")
         try:
             me = await client.get_me()
             if me:
+                logger.info(f"Найдена действующая сессия для {me.first_name}")
                 # Уже авторизован, запускаем детектор
                 auth_session["awaiting_sms"] = False
                 username = f"@{me.username}" if me.username else "без username"
@@ -446,11 +474,12 @@ async def start_detector(config: TelegramConfig):
             logger.info(f"Сохраненная сессия недействительна: {e}")
         
         # Нужна новая авторизация, отправляем SMS
+        logger.info(f"Отправляем SMS код на {config.phone_number}...")
         try:
             sent_code = await client.send_code(config.phone_number)
             auth_session["awaiting_sms"] = True
             
-            logger.info(f"SMS код отправлен на {config.phone_number}")
+            logger.info(f"SMS код успешно отправлен на {config.phone_number}")
             return {"message": "SMS код отправлен", "status": "sms_required"}
         except Exception as e:
             logger.error(f"Ошибка отправки SMS: {e}")
