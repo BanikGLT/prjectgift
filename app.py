@@ -454,6 +454,15 @@ async def start_detector(config: TelegramConfig):
     
     if not config.api_id.isdigit():
         raise HTTPException(status_code=400, detail="API ID должен содержать только цифры")
+        
+    if len(config.api_hash) < 32:
+        raise HTTPException(status_code=400, detail="API Hash слишком короткий (должен быть 32+ символов)")
+        
+    if not config.phone_number.startswith('+'):
+        raise HTTPException(status_code=400, detail="Номер телефона должен начинаться с +")
+        
+    # Логируем валидированные данные
+    logger.info(f"Валидация пройдена: API ID длина={len(config.api_id)}, API Hash длина={len(config.api_hash)}, Phone={config.phone_number}")
     
     try:
         logger.info("Начинаем процесс авторизации...")
@@ -536,9 +545,28 @@ async def start_detector(config: TelegramConfig):
         try:
             await client.connect()
             logger.info("Подключение к Telegram успешно")
+            
+            # Проверяем что соединение реально работает
+            logger.info("Тестируем соединение с Telegram API...")
+            try:
+                # Простой тест - получаем информацию о Telegram DC
+                dc_info = await client.get_me()  # Это вызовет ошибку если не авторизован, но покажет что API работает
+            except Exception as dc_error:
+                logger.info(f"Ожидаемая ошибка авторизации (это нормально): {dc_error}")
+                logger.info("✅ Соединение с Telegram API работает")
+            
         except Exception as e:
             logger.error(f"Ошибка подключения к Telegram: {e}")
-            raise Exception(f"Ошибка подключения: {str(e)}")
+            logger.error(f"Тип ошибки: {type(e)}")
+            
+            # Проверяем специфичные ошибки
+            error_str = str(e).lower()
+            if "network" in error_str or "connection" in error_str:
+                raise Exception(f"Проблема с сетью: {str(e)}")
+            elif "api" in error_str:
+                raise Exception(f"Проблема с API данными: {str(e)}")
+            else:
+                raise Exception(f"Ошибка подключения: {str(e)}")
         
         # Проверяем, авторизован ли уже (есть ли сохраненная сессия)
         logger.info("Проверяем существующую авторизацию...")
@@ -556,24 +584,56 @@ async def start_detector(config: TelegramConfig):
         
         # Нужна новая авторизация, отправляем SMS
         logger.info(f"Отправляем SMS код на {config.phone_number}...")
+        logger.info(f"API ID: {config.api_id}, API Hash: {config.api_hash[:10]}...")
+        
         try:
+            # Проверяем подключение к Telegram перед отправкой SMS
+            logger.info("Проверяем подключение к Telegram API...")
+            
             sent_code = await client.send_code(config.phone_number)
             auth_session["awaiting_sms"] = True
             
-            # Детальная информация о sent_code
-            logger.info(f"SMS код успешно отправлен на {config.phone_number}")
-            logger.info(f"Тип отправки: {sent_code.type}")
-            logger.info(f"Phone code hash: {sent_code.phone_code_hash[:10]}...")
+            # ДЕТАЛЬНАЯ ПРОВЕРКА sent_code объекта
+            logger.info(f"=== АНАЛИЗ ОТПРАВКИ SMS ===")
+            logger.info(f"Тип объекта sent_code: {type(sent_code)}")
+            logger.info(f"Все атрибуты sent_code: {dir(sent_code)}")
+            
+            # Проверяем основные поля
+            if hasattr(sent_code, 'type'):
+                logger.info(f"Тип отправки: {sent_code.type}")
+                logger.info(f"Тип отправки (raw): {repr(sent_code.type)}")
+            else:
+                logger.warning("У sent_code НЕТ атрибута 'type'!")
+                
+            if hasattr(sent_code, 'phone_code_hash'):
+                logger.info(f"Phone code hash: {sent_code.phone_code_hash}")
+                if len(sent_code.phone_code_hash) > 0:
+                    logger.info("✅ Phone code hash не пустой - SMS должен быть отправлен")
+                else:
+                    logger.error("❌ Phone code hash ПУСТОЙ - SMS НЕ отправлен!")
+            else:
+                logger.error("❌ У sent_code НЕТ атрибута 'phone_code_hash'!")
+                
             if hasattr(sent_code, 'timeout'):
                 logger.info(f"Таймаут: {sent_code.timeout} секунд")
             if hasattr(sent_code, 'next_type'):
                 logger.info(f"Следующий тип: {sent_code.next_type}")
                 
+            # Проверяем что SMS реально отправлен
+            sms_sent = False
+            if hasattr(sent_code, 'phone_code_hash') and sent_code.phone_code_hash:
+                sms_sent = True
+                logger.info("✅ SMS КОД ОТПРАВЛЕН УСПЕШНО")
+            else:
+                logger.error("❌ SMS КОД НЕ ОТПРАВЛЕН - проблема с API или номером")
+                
             return {
-                "message": f"SMS код отправлен на {config.phone_number}. Проверьте телефон в течение 5-10 минут.", 
-                "status": "sms_required",
+                "message": f"SMS код {'отправлен' if sms_sent else 'НЕ ОТПРАВЛЕН'} на {config.phone_number}. {'Проверьте телефон' if sms_sent else 'Проверьте API данные и номер телефона'}.", 
+                "status": "sms_required" if sms_sent else "error",
                 "phone": config.phone_number,
-                "code_type": str(sent_code.type) if hasattr(sent_code, 'type') else "unknown"
+                "code_type": str(sent_code.type) if hasattr(sent_code, 'type') else "unknown",
+                "sms_sent": sms_sent,
+                "phone_code_hash": bool(hasattr(sent_code, 'phone_code_hash') and sent_code.phone_code_hash)
             }
         except Exception as e:
             logger.error(f"Ошибка отправки SMS: {e}")
