@@ -320,8 +320,8 @@ async def complete_auth(auth_data: dict):
         logger.info(f"Попытка авторизации с SMS кодом: {sms_code}")
         
         try:
-            # Пытаемся войти с SMS кодом
-            await client.sign_in(auth_session["config"].phone_number, sms_code)
+            # Пытаемся войти с SMS кодом (правильный порядок параметров)
+            await client.sign_in(auth_session["config"].phone_number, auth_session["sent_code"].phone_code_hash, sms_code)
             logger.info("Авторизация по SMS успешна!")
             
         except SessionPasswordNeeded:
