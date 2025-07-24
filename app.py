@@ -414,9 +414,16 @@ async def start_detector(config: TelegramConfig):
         logger.info("Начинаем процесс авторизации...")
         logger.info(f"API ID: {config.api_id}, Phone: {config.phone_number}")
         
-        from pyrogram import Client
-        from pyrogram.errors import SessionPasswordNeeded
-        logger.info("Pyrogram импортирован успешно")
+        try:
+            from pyrogram import Client
+            from pyrogram.errors import SessionPasswordNeeded
+            logger.info("Pyrogram импортирован успешно")
+        except ImportError as e:
+            logger.error(f"Ошибка импорта Pyrogram: {e}")
+            raise HTTPException(status_code=500, detail=f"Pyrogram не установлен: {str(e)}")
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка при импорте: {e}")
+            raise HTTPException(status_code=500, detail=f"Ошибка импорта: {str(e)}")
         
         # Создаем папку для сессий
         import os
