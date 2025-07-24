@@ -581,8 +581,12 @@ async def index():
                 <button class="btn" onclick="completeAuth()">✅ Подтвердить авторизацию</button>
             </div>
             
-            <button class="btn" onclick="startDetector()">🚀 Запустить детектор</button>
-            <button class="btn danger" onclick="stopDetector()">⏹️ Остановить детектор</button>
+                    <button class="btn" onclick="startDetector()">🚀 Запустить детектор</button>
+        <button class="btn danger" onclick="stopDetector()">⏹️ Остановить детектор</button>
+        <button class="btn" onclick="checkAuthStatus()">🔍 Проверить авторизацию</button>
+        <button class="btn" onclick="viewHistory()">📜 История подарков</button>
+        <button class="btn" onclick="simulateGift()">🎁 Тестовый подарок</button>
+        <button class="btn" onclick="viewSessions()">💾 Сессии</button>
             
             <div style="margin-top: 20px;">
                 <h3>Статус: <span id="status">Неактивен</span></h3>
@@ -653,18 +657,68 @@ async def index():
             .catch(error => alert('Ошибка: ' + error.message));
         }
         
-        function refreshStatus() {
-            fetch('/detector/status')
-            .then(response => response.json())
-            .then(data => {
-                document.getElementById('status').textContent = data.status;
-                document.getElementById('gifts-count').textContent = data.gifts_found || 0;
-            })
-            .catch(error => console.error('Error:', error));
-        }
-        
-        setInterval(refreshStatus, 5000);
-        refreshStatus();
+                    function refreshStatus() {
+                fetch('/detector/status')
+                    .then(response => response.json())
+                    .then(data => {
+                        document.getElementById('status').textContent = data.status;
+                        document.getElementById('gifts-count').textContent = data.gifts_found || 0;
+                    })
+                    .catch(error => console.error('Error:', error));
+            }
+            
+            function checkAuthStatus() {
+                fetch('/detector/auth_status')
+                    .then(response => response.json())
+                    .then(data => {
+                        alert('Состояние авторизации:\\n' + JSON.stringify(data, null, 2));
+                        console.log('Auth Status:', data);
+                    })
+                    .catch(error => alert('Ошибка: ' + error.message));
+            }
+            
+            function viewHistory() {
+                fetch('/detector/history')
+                    .then(response => response.json())
+                    .then(data => {
+                        let historyText = `Найдено подарков: ${data.total_count}\\n\\n`;
+                        data.gifts.forEach((gift, index) => {
+                            historyText += `${index + 1}. ${gift.gift_info.details.gift_category} (${gift.timestamp})\\n`;
+                        });
+                        alert(historyText || 'История пуста');
+                    })
+                    .catch(error => alert('Ошибка: ' + error.message));
+            }
+            
+            function simulateGift() {
+                fetch('/detector/simulate-gift', {method: 'POST'})
+                    .then(response => response.json())
+                    .then(data => {
+                        alert(data.message);
+                        refreshStatus(); // Обновляем счетчик
+                    })
+                    .catch(error => alert('Ошибка: ' + error.message));
+            }
+            
+            function viewSessions() {
+                fetch('/detector/sessions')
+                    .then(response => response.json())
+                    .then(data => {
+                        let sessionsText = 'Сохраненные сессии:\\n\\n';
+                        if (data.sessions.length === 0) {
+                            sessionsText += 'Нет сохраненных сессий';
+                        } else {
+                            data.sessions.forEach(session => {
+                                sessionsText += `📁 ${session.name} (${session.size} bytes, ${session.modified})\\n`;
+                            });
+                        }
+                        alert(sessionsText);
+                    })
+                    .catch(error => alert('Ошибка: ' + error.message));
+            }
+            
+            setInterval(refreshStatus, 5000);
+            refreshStatus();
         </script>
     </body>
     </html>
@@ -865,4 +919,118 @@ async def complete_auth(auth_data: dict):
 
 @app.post("/detector/stop")
 async def stop_detector():
-    return {"message": "Детектор остановлен"}
+    global detector_status
+    detector_status["running"] = False
+    detector_status["status"] = "Остановлен"
+    detector_status["stop_time"] = datetime.now()
+    
+    # Отключаем клиент если он есть
+    if "client" in auth_session and auth_session["client"]:
+        try:
+            await auth_session["client"].stop()
+            logger.info("Клиент Pyrogram остановлен")
+        except Exception as e:
+            logger.warning(f"Ошибка при остановке клиента: {e}")
+    
+    return {"message": "Детектор остановлен", "status": "success"}
+
+@app.get("/detector/history")
+async def get_gift_history():
+    """Получить историю найденных подарков"""
+    return {
+        "gifts": detector_status.get("gifts_history", []),
+        "total_count": detector_status.get("gifts_found", 0)
+    }
+
+@app.get("/detector/auth_status")
+async def get_auth_status():
+    """Проверить состояние авторизации"""
+    return {
+        "auth_session": {
+            "awaiting_sms": auth_session.get("awaiting_sms", False),
+            "phone_number": auth_session.get("phone_number", ""),
+            "has_client": "client" in auth_session,
+            "has_sent_code": "sent_code" in auth_session
+        },
+        "detector_status": detector_status
+    }
+
+@app.get("/detector/sessions")
+async def list_sessions():
+    """Список сохраненных сессий"""
+    try:
+        if not os.path.exists(sessions_dir):
+            return {"sessions": []}
+        
+        sessions = []
+        for file in os.listdir(sessions_dir):
+            if file.endswith('.session'):
+                session_name = file.replace('.session', '')
+                file_path = os.path.join(sessions_dir, file)
+                stat = os.stat(file_path)
+                sessions.append({
+                    "name": session_name,
+                    "size": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+                })
+        return {"sessions": sessions}
+    except Exception as e:
+        logger.error(f"Ошибка получения списка сессий: {e}")
+        return {"sessions": [], "error": str(e)}
+
+@app.delete("/detector/sessions/{session_name}")
+async def delete_session(session_name: str):
+    """Удалить сохраненную сессию"""
+    try:
+        session_file = os.path.join(sessions_dir, f"{session_name}.session")
+        if os.path.exists(session_file):
+            os.remove(session_file)
+            return {"message": f"Сессия {session_name} удалена", "status": "success"}
+        else:
+            return {"message": f"Сессия {session_name} не найдена", "status": "error"}
+    except Exception as e:
+        logger.error(f"Ошибка удаления сессии {session_name}: {e}")
+        return {"message": f"Ошибка удаления сессии: {e}", "status": "error"}
+
+@app.post("/detector/simulate-gift")
+async def simulate_gift():
+    """Симуляция получения подарка для тестирования"""
+    if not detector_status["running"]:
+        return {"message": "Детектор не запущен", "status": "error"}
+    
+    # Создаем тестовый подарок
+    test_gift = {
+        "type": "star_gift",
+        "source": "simulation",
+        "details": {
+            "gift_category": "🎁 ТЕСТОВЫЙ ПОДАРОК",
+            "stars": 15,
+            "id": "test_bear_001",
+            "limited": True,
+            "remaining_count": 50,
+            "total_count": 1000,
+            "can_upgrade": True,
+            "can_transfer": True,
+            "transfer_star_count": 25,
+            "upgrade_star_count": 50,
+            "model": "bear_3d_model",
+            "backdrop": "forest_backdrop",
+            "symbol": "🐻",
+            "pattern": "golden_pattern"
+        }
+    }
+    
+    # Добавляем в историю
+    if "gifts_history" not in detector_status:
+        detector_status["gifts_history"] = []
+    
+    detector_status["gifts_history"].append({
+        "gift_info": test_gift,
+        "timestamp": datetime.now().isoformat(),
+        "message_id": "TEST_MSG",
+        "chat_id": "TEST_CHAT"
+    })
+    
+    detector_status["gifts_found"] = detector_status.get("gifts_found", 0) + 1
+    
+    return {"message": "Тестовый подарок добавлен в историю", "status": "success", "gift": test_gift}
