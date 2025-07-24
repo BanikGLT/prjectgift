@@ -125,14 +125,33 @@ def read_root():
                 if (data.status === 'sms_required') {
                     // Показываем поля для авторизации
                     console.log('Показываем поля авторизации');
-                    document.getElementById('auth-fields').style.display = 'block';
-                    document.getElementById('auth-status').textContent = 'показаны';
-                    document.getElementById('resend-btn').style.display = 'inline-block';
+                    
+                    // Принудительно показываем поля
+                    const authFields = document.getElementById('auth-fields');
+                    console.log('Элемент auth-fields найден:', authFields !== null);
+                    
+                    if (authFields) {
+                        authFields.style.display = 'block';
+                        authFields.style.visibility = 'visible';
+                        console.log('Поля авторизации показаны, display:', authFields.style.display);
+                    } else {
+                        console.error('Элемент auth-fields НЕ НАЙДЕН!');
+                    }
+                    
+                    // Обновляем статус
+                    const authStatus = document.getElementById('auth-status');
+                    if (authStatus) authStatus.textContent = 'показаны';
+                    
+                    // Показываем кнопку повтора
+                    const resendBtn = document.getElementById('resend-btn');
+                    if (resendBtn) resendBtn.style.display = 'inline-block';
+                    
+                    // Обновляем кнопку запуска
                     document.getElementById('start-btn').textContent = '📱 SMS отправлен';
                     document.getElementById('start-btn').disabled = false;
                     
                     // Показываем дополнительную информацию
-                    let alertMsg = 'SMS код отправлен! Введите его в поле ниже.';
+                    let alertMsg = 'SMS код отправлен! Поля авторизации должны быть видны ниже.';
                     if (data.debug_info) {
                         alertMsg += '\n\nОтладка: ' + data.debug_info;
                     }
@@ -276,10 +295,29 @@ def read_root():
         function showAuthFields() {
             // Принудительно показываем поля авторизации для отладки
             console.log('Принудительно показываем поля авторизации');
-            document.getElementById('auth-fields').style.display = 'block';
-            document.getElementById('auth-status').textContent = 'показаны (принудительно)';
-            document.getElementById('resend-btn').style.display = 'inline-block';
-            alert('Поля авторизации показаны принудительно. Используйте для ввода SMS кода.');
+            
+            const authFields = document.getElementById('auth-fields');
+            console.log('showAuthFields: Элемент найден:', authFields !== null);
+            
+            if (authFields) {
+                authFields.style.display = 'block';
+                authFields.style.visibility = 'visible';
+                authFields.style.opacity = '1';
+                console.log('showAuthFields: Стили установлены, display:', authFields.style.display);
+                
+                // Проверяем содержимое
+                console.log('showAuthFields: HTML содержимое:', authFields.innerHTML.length > 0 ? 'есть' : 'пустое');
+            } else {
+                console.error('showAuthFields: Элемент auth-fields НЕ НАЙДЕН!');
+            }
+            
+            const authStatus = document.getElementById('auth-status');
+            if (authStatus) authStatus.textContent = 'показаны (принудительно)';
+            
+            const resendBtn = document.getElementById('resend-btn');
+            if (resendBtn) resendBtn.style.display = 'inline-block';
+            
+            alert('Поля авторизации показаны принудительно. Проверьте консоль браузера (F12) для отладки.');
         }
         
                  function resendSMS() {
@@ -347,8 +385,32 @@ def read_root():
              });
          }
         
+        // Функция для отладки элементов страницы
+        function debugElements() {
+            console.log('=== ОТЛАДКА ЭЛЕМЕНТОВ ===');
+            console.log('auth-fields:', document.getElementById('auth-fields'));
+            console.log('auth-status:', document.getElementById('auth-status'));
+            console.log('sms_code:', document.getElementById('sms_code'));
+            console.log('two_fa_password:', document.getElementById('two_fa_password'));
+            console.log('start-btn:', document.getElementById('start-btn'));
+            console.log('resend-btn:', document.getElementById('resend-btn'));
+            
+            // Проверяем все div на странице
+            const allDivs = document.querySelectorAll('div');
+            console.log('Всего div элементов:', allDivs.length);
+            
+            const authFieldsAll = document.querySelectorAll('[id*="auth"]');
+            console.log('Элементы с "auth" в id:', authFieldsAll);
+        }
+        
+        // Вызываем отладку при загрузке
+        window.onload = function() {
+            refreshStatus();
+            debugElements();
+            console.log('Страница загружена, элементы проверены');
+        };
+        
         setInterval(refreshStatus, 5000);
-        window.onload = refreshStatus;
         </script>
     </head>
     <body>
