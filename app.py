@@ -30,6 +30,109 @@ auth_session = {
 
 gift_history = []
 
+# Функция для запуска детектора подарков
+async def start_gift_detector(client):
+    """Запускает обработчик сообщений для детекции подарков"""
+    
+    @client.on_message()
+    async def handle_message(client, message):
+        try:
+            logger.info(f"Получено сообщение: {message.message_id} от {message.from_user.id if message.from_user else 'unknown'}")
+            
+            # Проверяем на подарки
+            gift_info = await check_for_gifts(message)
+            if gift_info:
+                logger.info(f"🎁 НАЙДЕН ПОДАРОК: {gift_info}")
+                
+                # Сохраняем в историю
+                gift_history.append({
+                    "timestamp": datetime.now().isoformat(),
+                    "gift_info": gift_info,
+                    "message_id": message.message_id,
+                    "from_user": message.from_user.id if message.from_user else None
+                })
+                
+                # Обновляем статистику
+                detector_status["gifts_found"] += 1
+                
+                # Отправляем ответ отправителю
+                await send_gift_response(client, message, gift_info)
+                
+        except Exception as e:
+            logger.error(f"Ошибка обработки сообщения: {e}")
+    
+    logger.info("🎁 Детектор подарков активирован и слушает сообщения!")
+
+async def check_for_gifts(message):
+    """Проверяет сообщение на наличие подарков"""
+    
+    # 1. Проверяем service сообщения (официальные подарки)
+    if hasattr(message, 'service') and message.service:
+        service_type = str(type(message.service).__name__)
+        logger.info(f"Service message type: {service_type}")
+        
+        if 'Gift' in service_type or 'StarGift' in service_type:
+            return {
+                "type": "service_gift",
+                "service_type": service_type,
+                "details": str(message.service)
+            }
+    
+    # 2. Проверяем текст на упоминания подарков
+    if message.text:
+        text_lower = message.text.lower()
+        gift_keywords = ['подарок', 'gift', 'звезды', 'stars', 'премиум', 'premium']
+        
+        if any(keyword in text_lower for keyword in gift_keywords):
+            logger.info(f"Найдено упоминание подарка в тексте: {message.text[:100]}")
+            return {
+                "type": "text_mention",
+                "text": message.text,
+                "keywords_found": [kw for kw in gift_keywords if kw in text_lower]
+            }
+    
+    # 3. Проверяем стикеры
+    if message.sticker:
+        sticker_emoji = message.sticker.emoji
+        gift_emojis = ['🎁', '🎉', '⭐', '💎', '🌟']
+        
+        if sticker_emoji in gift_emojis:
+            logger.info(f"Найден подарочный стикер: {sticker_emoji}")
+            return {
+                "type": "gift_sticker",
+                "emoji": sticker_emoji,
+                "file_id": message.sticker.file_id
+            }
+    
+    return None
+
+async def send_gift_response(client, original_message, gift_info):
+    """Отправляет ответ с информацией о подарке"""
+    
+    try:
+        # Формируем ответ
+        response_text = f"""🎁 <b>ИНФОРМАЦИЯ О ПОДАРКЕ</b>
+
+🔍 <b>Тип:</b> {gift_info['type']}
+📝 <b>Детали:</b> {gift_info.get('details', 'N/A')}
+🆔 <b>ID сообщения:</b> {original_message.message_id}
+⏰ <b>Время:</b> {datetime.now().strftime('%H:%M:%S')}
+
+✨ <b>Спасибо за подарок!</b> ✨"""
+
+        # Отправляем ответ в тот же чат
+        if original_message.chat:
+            await client.send_message(
+                chat_id=original_message.chat.id,
+                text=response_text,
+                parse_mode="HTML",
+                reply_to_message_id=original_message.message_id
+            )
+            logger.info(f"Отправлен ответ о подарке в чат {original_message.chat.id}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка отправки ответа: {e}")
+
 class TelegramConfig(BaseModel):
     api_id: str
     api_hash: str
@@ -271,7 +374,13 @@ async def start_detector(config: TelegramConfig):
             if me:
                 logger.info(f"Найдена действующая сессия для {me.first_name}")
                 auth_session["awaiting_sms"] = False
+                detector_status["running"] = True
+                detector_status["status"] = "Активен"
+                detector_status["start_time"] = datetime.now()
+                
                 # Запускаем детектор сразу
+                await start_gift_detector(client)
+                
                 return {"message": "Сессия найдена, детектор запущен!", "status": "success"}
         except Exception as e:
             logger.info(f"Сохраненная сессия недействительна: {e}")
@@ -335,11 +444,14 @@ async def complete_auth(auth_data: dict):
             await client.check_password(password)
             logger.info("Авторизация по 2FA успешна!")
         
-        # Авторизация успешна
+        # Авторизация успешна - запускаем детектор
         auth_session["awaiting_sms"] = False
         detector_status["running"] = True
         detector_status["status"] = "Активен"
         detector_status["start_time"] = datetime.now()
+        
+        # Запускаем обработчик сообщений
+        await start_gift_detector(client)
         
         logger.info("Детектор запущен успешно!")
         return {
