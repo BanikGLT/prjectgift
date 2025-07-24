@@ -120,17 +120,22 @@ def read_root():
                 return response.json();
             })
             .then(data => {
+                console.log('Ответ сервера:', data);
+                
                 if (data.status === 'sms_required') {
                     // Показываем поля для авторизации
+                    console.log('Показываем поля авторизации');
                     document.getElementById('auth-fields').style.display = 'block';
+                    document.getElementById('auth-status').textContent = 'показаны';
                     document.getElementById('start-btn').textContent = '📱 SMS отправлен';
+                    document.getElementById('start-btn').disabled = false;
                     alert('SMS код отправлен! Введите его в поле ниже.');
                 } else if (data.status === 'success') {
                     alert(data.message);
                     document.getElementById('start-btn').disabled = false;
                     document.getElementById('start-btn').textContent = '🚀 Запустить детектор';
                 } else {
-                    alert(data.message || 'Ошибка запуска');
+                    alert(data.message || 'Неизвестный статус: ' + data.status);
                     document.getElementById('start-btn').disabled = false;
                     document.getElementById('start-btn').textContent = '🚀 Запустить детектор';
                 }
@@ -173,6 +178,7 @@ def read_root():
                 if (data.status === 'success') {
                     alert('✅ Авторизация успешна! Детектор запущен.');
                     document.getElementById('auth-fields').style.display = 'none';
+                    document.getElementById('auth-status').textContent = 'скрыты';
                     document.getElementById('start-btn').disabled = false;
                     document.getElementById('start-btn').textContent = '🚀 Запустить детектор';
                 } else {
@@ -260,6 +266,14 @@ def read_root():
             });
         }
         
+        function showAuthFields() {
+            // Принудительно показываем поля авторизации для отладки
+            console.log('Принудительно показываем поля авторизации');
+            document.getElementById('auth-fields').style.display = 'block';
+            document.getElementById('auth-status').textContent = 'показаны (принудительно)';
+            alert('Поля авторизации показаны принудительно. Используйте для ввода SMS кода.');
+        }
+        
         setInterval(refreshStatus, 5000);
         window.onload = refreshStatus;
         </script>
@@ -279,6 +293,9 @@ def read_root():
                 
                 <div class="config-form">
                     <h3>⚙️ Конфигурация Telegram</h3>
+                    <div id="debug-info" style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; margin: 10px 0; border-radius: 5px; font-size: 12px;">
+                        <strong>Отладка:</strong> Поля авторизации <span id="auth-status">скрыты</span>
+                    </div>
                     <div class="form-group">
                         <label>API ID:</label>
                         <input type="text" id="api_id" placeholder="Ваш API ID">
@@ -309,6 +326,7 @@ def read_root():
                     
                     <button class="btn" onclick="startDetector()" id="start-btn">🚀 Запустить детектор</button>
                     <button class="btn danger" onclick="stopDetector()">⏹️ Остановить детектор</button>
+                    <button class="btn" onclick="showAuthFields()" style="background: #ffc107; color: #000;">📱 Показать поля авторизации</button>
                 </div>
                 
                 <div class="stats">
