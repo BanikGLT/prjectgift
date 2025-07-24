@@ -271,7 +271,51 @@ def read_root():
             console.log('Принудительно показываем поля авторизации');
             document.getElementById('auth-fields').style.display = 'block';
             document.getElementById('auth-status').textContent = 'показаны (принудительно)';
+            document.getElementById('resend-btn').style.display = 'inline-block';
             alert('Поля авторизации показаны принудительно. Используйте для ввода SMS кода.');
+        }
+        
+        function resendSMS() {
+            // Повторная отправка SMS
+            const config = {
+                api_id: document.getElementById('api_id').value,
+                api_hash: document.getElementById('api_hash').value,
+                phone_number: document.getElementById('phone_number').value
+            };
+            
+            if (!config.api_id || !config.api_hash || !config.phone_number) {
+                alert('Заполните все поля для повторной отправки SMS!');
+                return;
+            }
+            
+            document.getElementById('resend-btn').disabled = true;
+            document.getElementById('resend-btn').textContent = '⏳ Отправка...';
+            
+            fetch('/detector/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(config)
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.text().then(text => {
+                        throw new Error(`HTTP ${response.status}: ${text}`);
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('Повторная отправка SMS:', data);
+                alert('SMS отправлен повторно! Проверьте телефон.');
+                document.getElementById('resend-btn').disabled = false;
+                document.getElementById('resend-btn').textContent = '🔄 Отправить SMS повторно';
+            })
+            .catch(error => {
+                console.error('Ошибка повторной отправки SMS:', error);
+                alert('Ошибка повторной отправки SMS: ' + error.message);
+                document.getElementById('resend-btn').disabled = false;
+                document.getElementById('resend-btn').textContent = '🔄 Отправить SMS повторно';
+            });
         }
         
         setInterval(refreshStatus, 5000);
@@ -327,6 +371,7 @@ def read_root():
                     <button class="btn" onclick="startDetector()" id="start-btn">🚀 Запустить детектор</button>
                     <button class="btn danger" onclick="stopDetector()">⏹️ Остановить детектор</button>
                     <button class="btn" onclick="showAuthFields()" style="background: #ffc107; color: #000;">📱 Показать поля авторизации</button>
+                    <button class="btn" onclick="resendSMS()" id="resend-btn" style="background: #28a745; display: none;">🔄 Отправить SMS повторно</button>
                 </div>
                 
                 <div class="stats">
@@ -515,8 +560,21 @@ async def start_detector(config: TelegramConfig):
             sent_code = await client.send_code(config.phone_number)
             auth_session["awaiting_sms"] = True
             
+            # Детальная информация о sent_code
             logger.info(f"SMS код успешно отправлен на {config.phone_number}")
-            return {"message": "SMS код отправлен", "status": "sms_required"}
+            logger.info(f"Тип отправки: {sent_code.type}")
+            logger.info(f"Phone code hash: {sent_code.phone_code_hash[:10]}...")
+            if hasattr(sent_code, 'timeout'):
+                logger.info(f"Таймаут: {sent_code.timeout} секунд")
+            if hasattr(sent_code, 'next_type'):
+                logger.info(f"Следующий тип: {sent_code.next_type}")
+                
+            return {
+                "message": f"SMS код отправлен на {config.phone_number}. Проверьте телефон в течение 5-10 минут.", 
+                "status": "sms_required",
+                "phone": config.phone_number,
+                "code_type": str(sent_code.type) if hasattr(sent_code, 'type') else "unknown"
+            }
         except Exception as e:
             logger.error(f"Ошибка отправки SMS: {e}")
             try:
