@@ -39,24 +39,98 @@ async def start_gift_detector(client):
     async def handle_message(client, message):
         await process_message_for_gifts(client, message)
     
-    # Обработчик для RAW updates (более низкий уровень)
+    # Обработчик для RAW updates (МАКСИМАЛЬНО АГРЕССИВНЫЙ)
     @client.on_raw_update()
     async def handle_raw_update(client, update, users, chats):
         try:
-            logger.info(f"🔄 RAW UPDATE: {type(update).__name__}")
+            update_name = type(update).__name__
             
-            # Проверяем на Star Gift в raw updates
+            # ЛОГИРУЕМ АБСОЛЮТНО ВСЕ UPDATES
+            logger.info(f"🔄 RAW UPDATE: {update_name}")
+            
+            # Проверяем на подарки в ЛЮБЫХ updates
+            if any(keyword in update_name.lower() for keyword in ['gift', 'star', 'present', 'подарок']):
+                logger.info(f"⭐ ПОТЕНЦИАЛЬНЫЙ GIFT UPDATE: {update_name}")
+                logger.info(f"📄 ПОЛНЫЕ данные update: {str(update)}")
+                
+                # Пытаемся извлечь информацию о подарке
+                gift_info = await extract_gift_from_update(update, update_name)
+                if gift_info:
+                    logger.info(f"🎁 ПОДАРОК НАЙДЕН В RAW UPDATE!")
+                    # Обновляем статистику
+                    detector_status["gifts_found"] += 1
+                    gift_history.append({
+                        "timestamp": datetime.now().isoformat(),
+                        "gift_info": gift_info,
+                        "source": "raw_update",
+                        "update_type": update_name
+                    })
+            
+            # Проверяем на Star Gift в обычных сообщениях
             if hasattr(update, 'message'):
                 await process_message_for_gifts(client, update.message)
             
-            # Проверяем специфичные update типы для подарков
-            update_name = type(update).__name__
-            if 'gift' in update_name.lower() or 'star' in update_name.lower():
-                logger.info(f"⭐ ПОТЕНЦИАЛЬНЫЙ GIFT UPDATE: {update_name}")
-                logger.info(f"📄 Update data: {str(update)[:1000]}")
+            # Проверяем другие поля update на предмет подарков
+            for attr_name in dir(update):
+                if not attr_name.startswith('_'):
+                    try:
+                        attr_value = getattr(update, attr_name)
+                        if attr_value and 'gift' in str(attr_value).lower():
+                            logger.info(f"🎁 GIFT в атрибуте {attr_name}: {str(attr_value)[:200]}")
+                    except:
+                        pass
                 
         except Exception as e:
             logger.error(f"Ошибка обработки raw update: {e}")
+    
+    # Дополнительный обработчик для ВСЕХ типов сообщений
+    @client.on_message(group=-1)  # Высший приоритет
+    async def handle_all_messages(client, message):
+        try:
+            # Проверяем КАЖДОЕ сообщение на предмет подарков
+            message_text = getattr(message, 'text', '') or ''
+            message_caption = getattr(message, 'caption', '') or ''
+            
+            # Ищем ключевые слова в тексте
+            full_text = (message_text + ' ' + message_caption).lower()
+            gift_keywords = ['star', 'gift', 'подарок', 'звезд', 'stars', '⭐', '🎁', 'мишка', 'bear']
+            
+            found_keywords = [kw for kw in gift_keywords if kw in full_text]
+            if found_keywords:
+                logger.info(f"🔍 СООБЩЕНИЕ С GIFT KEYWORDS: {found_keywords}")
+                logger.info(f"📝 Текст: {full_text[:200]}")
+                logger.info(f"📨 Полное сообщение: {str(message)[:500]}")
+                
+        except Exception as e:
+            logger.error(f"Ошибка в handle_all_messages: {e}")
+
+async def extract_gift_from_update(update, update_name):
+    """Извлекает подарок из raw update"""
+    try:
+        gift_info = {
+            "type": "star_gift",
+            "source": "raw_update",
+            "update_type": update_name,
+            "details": {
+                "gift_type": f"Gift from {update_name}",
+                "raw_data": str(update)
+            }
+        }
+        
+        # Ищем специфичные поля подарков
+        for attr in dir(update):
+            if not attr.startswith('_'):
+                try:
+                    value = getattr(update, attr)
+                    if value and any(keyword in str(value).lower() for keyword in ['gift', 'star', 'подарок']):
+                        gift_info["details"][attr] = str(value)
+                except:
+                    pass
+        
+        return gift_info
+    except Exception as e:
+        logger.error(f"Ошибка извлечения подарка из update: {e}")
+        return None
     
     async def process_message_for_gifts(client, message):
         try:
@@ -109,7 +183,36 @@ async def start_gift_detector(client):
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
     
+    # Пытаемся поймать события отправки сообщений
+    try:
+        from pyrogram import filters
+        
+        @client.on_message(filters.outgoing)  # Исходящие сообщения
+        async def handle_outgoing_messages(client, message):
+            try:
+                logger.info(f"📤 ИСХОДЯЩЕЕ СООБЩЕНИЕ: {message.message_id}")
+                
+                # Проверяем исходящие сообщения на предмет отправки подарков
+                if hasattr(message, 'media') and message.media:
+                    logger.info(f"📺 Исходящее media: {type(message.media).__name__}")
+                
+                # Проверяем на подарки в исходящих
+                gift_info = await check_for_gifts(message)
+                if gift_info:
+                    logger.info(f"🎁 ПОДАРОК В ИСХОДЯЩЕМ СООБЩЕНИИ!")
+                    
+            except Exception as e:
+                logger.error(f"Ошибка в handle_outgoing_messages: {e}")
+    
+    except Exception as e:
+        logger.error(f"Ошибка создания outgoing handler: {e}")
+    
     logger.info("🎁 Детектор подарков активирован и слушает сообщения!")
+    logger.info("🔍 Включены обработчики:")
+    logger.info("  - 📨 Входящие сообщения")
+    logger.info("  - 📤 Исходящие сообщения")  
+    logger.info("  - 🔄 Raw updates")
+    logger.info("  - 🔍 Keyword scanning")
 
 async def check_for_gifts(message):
     """Проверяет сообщение на наличие STAR GIFTS согласно Telegram API"""
