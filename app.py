@@ -275,48 +275,70 @@ def read_root():
             alert('Поля авторизации показаны принудительно. Используйте для ввода SMS кода.');
         }
         
-        function resendSMS() {
-            // Повторная отправка SMS
-            const config = {
-                api_id: document.getElementById('api_id').value,
-                api_hash: document.getElementById('api_hash').value,
-                phone_number: document.getElementById('phone_number').value
-            };
-            
-            if (!config.api_id || !config.api_hash || !config.phone_number) {
-                alert('Заполните все поля для повторной отправки SMS!');
-                return;
-            }
-            
-            document.getElementById('resend-btn').disabled = true;
-            document.getElementById('resend-btn').textContent = '⏳ Отправка...';
-            
-            fetch('/detector/start', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(config)
-            })
-            .then(response => {
-                if (!response.ok) {
-                    return response.text().then(text => {
-                        throw new Error(`HTTP ${response.status}: ${text}`);
-                    });
-                }
-                return response.json();
-            })
-            .then(data => {
-                console.log('Повторная отправка SMS:', data);
-                alert('SMS отправлен повторно! Проверьте телефон.');
-                document.getElementById('resend-btn').disabled = false;
-                document.getElementById('resend-btn').textContent = '🔄 Отправить SMS повторно';
-            })
-            .catch(error => {
-                console.error('Ошибка повторной отправки SMS:', error);
-                alert('Ошибка повторной отправки SMS: ' + error.message);
-                document.getElementById('resend-btn').disabled = false;
-                document.getElementById('resend-btn').textContent = '🔄 Отправить SMS повторно';
-            });
-        }
+                 function resendSMS() {
+             // Повторная отправка SMS
+             const config = {
+                 api_id: document.getElementById('api_id').value,
+                 api_hash: document.getElementById('api_hash').value,
+                 phone_number: document.getElementById('phone_number').value
+             };
+             
+             if (!config.api_id || !config.api_hash || !config.phone_number) {
+                 alert('Заполните все поля для повторной отправки SMS!');
+                 return;
+             }
+             
+             document.getElementById('resend-btn').disabled = true;
+             document.getElementById('resend-btn').textContent = '⏳ Отправка...';
+             
+             fetch('/detector/start', {
+                 method: 'POST',
+                 headers: {'Content-Type': 'application/json'},
+                 body: JSON.stringify(config)
+             })
+             .then(response => {
+                 if (!response.ok) {
+                     return response.text().then(text => {
+                         throw new Error(`HTTP ${response.status}: ${text}`);
+                     });
+                 }
+                 return response.json();
+             })
+             .then(data => {
+                 console.log('Повторная отправка SMS:', data);
+                 alert('SMS отправлен повторно! Проверьте телефон.');
+                 document.getElementById('resend-btn').disabled = false;
+                 document.getElementById('resend-btn').textContent = '🔄 Отправить SMS повторно';
+             })
+             .catch(error => {
+                 console.error('Ошибка повторной отправки SMS:', error);
+                 alert('Ошибка повторной отправки SMS: ' + error.message);
+                 document.getElementById('resend-btn').disabled = false;
+                 document.getElementById('resend-btn').textContent = '🔄 Отправить SMS повторно';
+             });
+         }
+         
+         function checkAuthStatus() {
+             // Проверка состояния авторизации
+             fetch('/detector/auth_status')
+             .then(response => response.json())
+             .then(data => {
+                 console.log('Состояние авторизации:', data);
+                 let message = '🔍 СОСТОЯНИЕ АВТОРИЗАЦИИ:\n\n';
+                 message += `📱 Ожидание SMS: ${data.awaiting_sms ? 'ДА' : 'НЕТ'}\n`;
+                 message += `🔗 Есть клиент: ${data.has_client ? 'ДА' : 'НЕТ'}\n`;
+                 message += `⚙️ Есть конфиг: ${data.has_config ? 'ДА' : 'НЕТ'}\n`;
+                 message += `📨 Есть sent_code: ${data.has_sent_code ? 'ДА' : 'НЕТ'}\n`;
+                 message += `📞 Номер телефона: ${data.phone_number}\n\n`;
+                 message += `Ключи в auth_session: ${data.auth_session_keys.join(', ')}`;
+                 
+                 alert(message);
+             })
+             .catch(error => {
+                 console.error('Ошибка проверки состояния:', error);
+                 alert('Ошибка проверки состояния: ' + error.message);
+             });
+         }
         
         setInterval(refreshStatus, 5000);
         window.onload = refreshStatus;
@@ -372,6 +394,7 @@ def read_root():
                     <button class="btn danger" onclick="stopDetector()">⏹️ Остановить детектор</button>
                     <button class="btn" onclick="showAuthFields()" style="background: #ffc107; color: #000;">📱 Показать поля авторизации</button>
                     <button class="btn" onclick="resendSMS()" id="resend-btn" style="background: #28a745; display: none;">🔄 Отправить SMS повторно</button>
+                    <button class="btn" onclick="checkAuthStatus()" style="background: #6c757d; color: white; font-size: 12px;">🔍 Проверить состояние</button>
                 </div>
                 
                 <div class="stats">
@@ -591,7 +614,18 @@ async def start_detector(config: TelegramConfig):
             logger.info("Проверяем подключение к Telegram API...")
             
             sent_code = await client.send_code(config.phone_number)
+            
+            # Сохраняем все данные в auth_session
             auth_session["awaiting_sms"] = True
+            auth_session["sent_code"] = sent_code
+            auth_session["phone_number"] = config.phone_number
+            
+            logger.info("Состояние auth_session после отправки SMS:")
+            logger.info(f"awaiting_sms: {auth_session['awaiting_sms']}")
+            logger.info(f"client: {auth_session['client'] is not None}")
+            logger.info(f"config: {auth_session['config'] is not None}")
+            logger.info(f"sent_code: {auth_session['sent_code'] is not None}")
+            logger.info(f"phone_number: {auth_session['phone_number']}")
             
             # ДЕТАЛЬНАЯ ПРОВЕРКА sent_code объекта
             logger.info(f"=== АНАЛИЗ ОТПРАВКИ SMS ===")
@@ -658,8 +692,25 @@ async def start_detector(config: TelegramConfig):
 
 @app.post("/detector/complete_auth")
 async def complete_auth(auth_data: dict):
-    if not auth_session["awaiting_sms"] or not auth_session["client"]:
-        raise HTTPException(status_code=400, detail="Авторизация не начата")
+    # Детальная диагностика состояния авторизации
+    logger.info("=== ДИАГНОСТИКА COMPLETE_AUTH ===")
+    logger.info(f"auth_session keys: {list(auth_session.keys())}")
+    logger.info(f"awaiting_sms: {auth_session.get('awaiting_sms', 'НЕТ КЛЮЧА')}")
+    logger.info(f"client exists: {auth_session.get('client') is not None}")
+    logger.info(f"config exists: {auth_session.get('config') is not None}")
+    logger.info(f"auth_data: {auth_data}")
+    
+    if not auth_session.get("awaiting_sms") and not auth_session.get("client"):
+        logger.error("Авторизация не начата - оба условия False")
+        raise HTTPException(status_code=400, detail="Авторизация не начата. Сначала нажмите 'Запустить детектор'")
+    
+    if not auth_session.get("client"):
+        logger.error("Клиент отсутствует в auth_session")
+        raise HTTPException(status_code=400, detail="Клиент не найден. Попробуйте заново запустить детектор")
+        
+    if not auth_session.get("awaiting_sms"):
+        logger.warning("awaiting_sms = False, но клиент есть. Возможно SMS уже был обработан")
+        # Не блокируем, возможно это повторная попытка
     
     try:
         from pyrogram.errors import SessionPasswordNeeded, BadRequest
@@ -756,6 +807,18 @@ async def stop_detector():
 @app.get("/detector/history")
 def get_gift_history():
     return {"gifts": gift_history}
+
+@app.get("/detector/auth_status")
+async def get_auth_status():
+    """Проверка состояния авторизации для отладки"""
+    return {
+        "auth_session_keys": list(auth_session.keys()),
+        "awaiting_sms": auth_session.get("awaiting_sms", False),
+        "has_client": auth_session.get("client") is not None,
+        "has_config": auth_session.get("config") is not None,
+        "has_sent_code": auth_session.get("sent_code") is not None,
+        "phone_number": auth_session.get("phone_number", "не указан")
+    }
 
 @app.get("/detector/sessions")
 def get_saved_sessions():
