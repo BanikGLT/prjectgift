@@ -305,10 +305,55 @@ async def extract_star_gift_from_action(action, action_type):
             gift = action.gift
             details["gift_object"] = str(gift)
             
-            # Поля из StarGift структуры
-            for field in ['id', 'stars', 'limited', 'sold_out', 'convert_stars', 'first_sale_date', 'last_sale_date']:
+            # ПОЛНАЯ StarGift структура согласно API
+            star_gift_fields = [
+                'id',                    # ID подарка
+                'stars',                 # Стоимость в звездах
+                'limited',               # Лимитированный ли
+                'sold_out',              # Распродан ли
+                'convert_stars',         # Звезды для конвертации
+                'first_sale_date',       # Дата первой продажи
+                'last_sale_date',        # Дата последней продажи
+                'total_count',           # Общее количество
+                'remaining_count',       # Оставшееся количество
+                'availability_remains',  # Доступность
+                'availability_total',    # Общая доступность
+                'transfer_star_count',   # Звезды для передачи
+                'upgrade_star_count',    # Звезды для улучшения
+                'model',                 # 3D модель
+                'backdrop',              # Фон
+                'symbol',                # Символ
+                'pattern',               # Паттерн
+                'center_icon',           # Центральная иконка
+                'sticker',               # Связанный стикер
+                'can_upgrade',           # Можно ли улучшить
+                'can_transfer',          # Можно ли передать
+                'is_name_color_default', # Цвет названия по умолчанию
+                'rarity',                # Редкость
+                'type'                   # Тип подарка
+            ]
+            
+            for field in star_gift_fields:
                 if hasattr(gift, field):
-                    details[field] = getattr(gift, field)
+                    value = getattr(gift, field)
+                    details[field] = value
+                    logger.info(f"  📊 {field}: {value}")
+            
+            # Определяем тип подарка
+            if details.get('limited'):
+                if details.get('remaining_count', 0) == 0:
+                    details['gift_category'] = "🔥 РЕДКИЙ (РАСПРОДАН)"
+                else:
+                    remaining = details.get('remaining_count', 0)
+                    total = details.get('total_count', 0)
+                    details['gift_category'] = f"⭐ РЕДКИЙ ({remaining}/{total})"
+            else:
+                details['gift_category'] = "🎁 ОБЫЧНЫЙ"
+            
+            if details.get('can_upgrade'):
+                details['gift_category'] += " + УЛУЧШАЕМЫЙ"
+            if details.get('can_transfer'):
+                details['gift_category'] += " + ПЕРЕДАВАЕМЫЙ"
         
         return {
             "type": "star_gift",
@@ -420,22 +465,40 @@ async def send_gift_response(client, original_message, gift_info):
     """Отправляет ответ с информацией о STAR GIFT"""
     
     try:
-        # Формируем детальный ответ для Star Gift
+        details = gift_info['details']
+        
+        # Формируем красивый детальный ответ
         response_text = f"""⭐ <b>STAR GIFT ПОЛУЧЕН!</b>
 
-🎁 <b>Тип:</b> {gift_info['details']['gift_type']}
-⭐ <b>Звезды:</b> {gift_info['details'].get('stars', 'N/A')}
-🆔 <b>ID подарка:</b> {gift_info['details'].get('gift_id', 'N/A')}
-🏆 <b>Лимитированный:</b> {gift_info['details'].get('limited', 'N/A')}
-📊 <b>Распродан:</b> {gift_info['details'].get('sold_out', 'N/A')}
+🎁 <b>Категория:</b> {details.get('gift_category', 'Неизвестно')}
+⭐ <b>Стоимость:</b> {details.get('stars', 'N/A')} звезд
+🆔 <b>ID подарка:</b> {details.get('id', 'N/A')}
+
+📊 <b>РЕДКОСТЬ:</b>
+🏆 <b>Лимитированный:</b> {'Да' if details.get('limited') else 'Нет'}
+📈 <b>Остаток:</b> {details.get('remaining_count', 'N/A')}/{details.get('total_count', 'N/A')}
+🔥 <b>Распродан:</b> {'Да' if details.get('sold_out') else 'Нет'}
+
+✨ <b>ВОЗМОЖНОСТИ:</b>
+🔄 <b>Можно улучшить:</b> {'Да' if details.get('can_upgrade') else 'Нет'}
+📤 <b>Можно передать:</b> {'Да' if details.get('can_transfer') else 'Нет'}
+⭐ <b>Звезды для передачи:</b> {details.get('transfer_star_count', 'N/A')}
+🌟 <b>Звезды для улучшения:</b> {details.get('upgrade_star_count', 'N/A')}
+
+🎨 <b>ДИЗАЙН:</b>
+🏠 <b>Модель:</b> {details.get('model', 'N/A')}
+🖼️ <b>Фон:</b> {details.get('backdrop', 'N/A')}
+🔣 <b>Символ:</b> {details.get('symbol', 'N/A')}
+🎭 <b>Паттерн:</b> {details.get('pattern', 'N/A')}
+
+📅 <b>ДАТЫ:</b>
+🚀 <b>Первая продажа:</b> {details.get('first_sale_date', 'N/A')}
+🏁 <b>Последняя продажа:</b> {details.get('last_sale_date', 'N/A')}
+
 🆔 <b>ID сообщения:</b> {original_message.message_id}
-⏰ <b>Время:</b> {datetime.now().strftime('%H:%M:%S')}
-📝 <b>Service Type:</b> {gift_info['service_type']}
+⏰ <b>Время получения:</b> {datetime.now().strftime('%H:%M:%S')}
 
-🌟 <b>СПАСИБО ЗА STAR GIFT!</b> 🌟
-
-<i>Полные данные:</i>
-<code>{gift_info['details'].get('raw_data', 'N/A')[:500]}</code>"""
+🌟 <b>СПАСИБО ЗА КОЛЛЕКЦИОННЫЙ STAR GIFT!</b> 🌟"""
 
         # Отправляем ответ отправителю в личные сообщения
         if original_message.from_user:
@@ -445,7 +508,7 @@ async def send_gift_response(client, original_message, gift_info):
                     text=response_text,
                     parse_mode="HTML"
                 )
-                logger.info(f"✅ Отправлен ответ о STAR GIFT в ЛС пользователю {original_message.from_user.id}")
+                logger.info(f"✅ Отправлен детальный ответ о STAR GIFT в ЛС пользователю {original_message.from_user.id}")
             except Exception as dm_error:
                 logger.warning(f"Не удалось отправить в ЛС: {dm_error}")
                 # Fallback: отправляем в тот же чат
@@ -456,7 +519,7 @@ async def send_gift_response(client, original_message, gift_info):
                         parse_mode="HTML",
                         reply_to_message_id=original_message.message_id
                     )
-                    logger.info(f"📨 Отправлен ответ о STAR GIFT в чат {original_message.chat.id}")
+                    logger.info(f"📨 Отправлен детальный ответ о STAR GIFT в чат {original_message.chat.id}")
         
     except Exception as e:
         logger.error(f"Ошибка отправки ответа: {e}")
