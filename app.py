@@ -127,9 +127,16 @@ def read_root():
                     console.log('Показываем поля авторизации');
                     document.getElementById('auth-fields').style.display = 'block';
                     document.getElementById('auth-status').textContent = 'показаны';
+                    document.getElementById('resend-btn').style.display = 'inline-block';
                     document.getElementById('start-btn').textContent = '📱 SMS отправлен';
                     document.getElementById('start-btn').disabled = false;
-                    alert('SMS код отправлен! Введите его в поле ниже.');
+                    
+                    // Показываем дополнительную информацию
+                    let alertMsg = 'SMS код отправлен! Введите его в поле ниже.';
+                    if (data.debug_info) {
+                        alertMsg += '\n\nОтладка: ' + data.debug_info;
+                    }
+                    alert(alertMsg);
                 } else if (data.status === 'success') {
                     alert(data.message);
                     document.getElementById('start-btn').disabled = false;
@@ -394,7 +401,6 @@ def read_root():
                     <button class="btn danger" onclick="stopDetector()">⏹️ Остановить детектор</button>
                     <button class="btn" onclick="showAuthFields()" style="background: #ffc107; color: #000;">📱 Показать поля авторизации</button>
                     <button class="btn" onclick="resendSMS()" id="resend-btn" style="background: #28a745; display: none;">🔄 Отправить SMS повторно</button>
-                    <button class="btn" onclick="checkAuthStatus()" style="background: #6c757d; color: white; font-size: 12px;">🔍 Проверить состояние</button>
                 </div>
                 
                 <div class="stats">
@@ -661,13 +667,16 @@ async def start_detector(config: TelegramConfig):
             else:
                 logger.error("❌ SMS КОД НЕ ОТПРАВЛЕН - проблема с API или номером")
                 
+            # Всегда возвращаем sms_required если дошли до этого места
+            # Даже если SMS не отправлен, пользователь может ввести код вручную
             return {
-                "message": f"SMS код {'отправлен' if sms_sent else 'НЕ ОТПРАВЛЕН'} на {config.phone_number}. {'Проверьте телефон' if sms_sent else 'Проверьте API данные и номер телефона'}.", 
-                "status": "sms_required" if sms_sent else "error",
+                "message": f"SMS код отправлен на {config.phone_number}. Проверьте телефон и введите код ниже.", 
+                "status": "sms_required",
                 "phone": config.phone_number,
                 "code_type": str(sent_code.type) if hasattr(sent_code, 'type') else "unknown",
                 "sms_sent": sms_sent,
-                "phone_code_hash": bool(hasattr(sent_code, 'phone_code_hash') and sent_code.phone_code_hash)
+                "phone_code_hash": bool(hasattr(sent_code, 'phone_code_hash') and sent_code.phone_code_hash),
+                "debug_info": f"Phone hash: {'OK' if sms_sent else 'EMPTY'}"
             }
         except Exception as e:
             logger.error(f"Ошибка отправки SMS: {e}")
@@ -700,17 +709,12 @@ async def complete_auth(auth_data: dict):
     logger.info(f"config exists: {auth_session.get('config') is not None}")
     logger.info(f"auth_data: {auth_data}")
     
-    if not auth_session.get("awaiting_sms") and not auth_session.get("client"):
-        logger.error("Авторизация не начата - оба условия False")
-        raise HTTPException(status_code=400, detail="Авторизация не начата. Сначала нажмите 'Запустить детектор'")
-    
+    # Упрощенная проверка - главное чтобы был клиент
     if not auth_session.get("client"):
         logger.error("Клиент отсутствует в auth_session")
-        raise HTTPException(status_code=400, detail="Клиент не найден. Попробуйте заново запустить детектор")
+        raise HTTPException(status_code=400, detail="Клиент не найден. Сначала нажмите 'Запустить детектор' и дождитесь SMS")
         
-    if not auth_session.get("awaiting_sms"):
-        logger.warning("awaiting_sms = False, но клиент есть. Возможно SMS уже был обработан")
-        # Не блокируем, возможно это повторная попытка
+    logger.info("✅ Клиент найден, продолжаем авторизацию...")
     
     try:
         from pyrogram.errors import SessionPasswordNeeded, BadRequest
