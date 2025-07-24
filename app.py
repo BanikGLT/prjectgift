@@ -64,71 +64,166 @@ async def start_gift_detector(client):
     logger.info("🎁 Детектор подарков активирован и слушает сообщения!")
 
 async def check_for_gifts(message):
-    """Проверяет сообщение на наличие подарков"""
+    """Проверяет сообщение на наличие ОФИЦИАЛЬНЫХ Telegram Gifts"""
     
-    # 1. Проверяем service сообщения (официальные подарки)
+    # ТОЛЬКО официальные Telegram Gifts через service messages
     if hasattr(message, 'service') and message.service:
         service_type = str(type(message.service).__name__)
-        logger.info(f"Service message type: {service_type}")
+        logger.info(f"🔍 Service message detected: {service_type}")
         
-        if 'Gift' in service_type or 'StarGift' in service_type:
+        # Проверяем специфичные типы подарков
+        if 'StarGift' in service_type:
+            logger.info("⭐ STAR GIFT обнаружен!")
+            gift_details = await extract_star_gift_info(message.service)
             return {
-                "type": "service_gift",
+                "type": "star_gift",
                 "service_type": service_type,
-                "details": str(message.service)
+                "details": gift_details
             }
-    
-    # 2. Проверяем текст на упоминания подарков
-    if message.text:
-        text_lower = message.text.lower()
-        gift_keywords = ['подарок', 'gift', 'звезды', 'stars', 'премиум', 'premium']
         
-        if any(keyword in text_lower for keyword in gift_keywords):
-            logger.info(f"Найдено упоминание подарка в тексте: {message.text[:100]}")
+        elif 'GiftPremium' in service_type or 'PremiumGift' in service_type:
+            logger.info("💎 PREMIUM GIFT обнаружен!")
+            gift_details = await extract_premium_gift_info(message.service)
             return {
-                "type": "text_mention",
-                "text": message.text,
-                "keywords_found": [kw for kw in gift_keywords if kw in text_lower]
+                "type": "premium_gift", 
+                "service_type": service_type,
+                "details": gift_details
             }
-    
-    # 3. Проверяем стикеры
-    if message.sticker:
-        sticker_emoji = message.sticker.emoji
-        gift_emojis = ['🎁', '🎉', '⭐', '💎', '🌟']
         
-        if sticker_emoji in gift_emojis:
-            logger.info(f"Найден подарочный стикер: {sticker_emoji}")
+        elif 'Gift' in service_type:
+            logger.info("🎁 GENERAL GIFT обнаружен!")
             return {
-                "type": "gift_sticker",
-                "emoji": sticker_emoji,
-                "file_id": message.sticker.file_id
+                "type": "telegram_gift",
+                "service_type": service_type,
+                "details": await extract_general_gift_info(message.service)
             }
+        
+        else:
+            # Логируем все service messages для отладки
+            logger.info(f"📝 Other service message: {service_type} - {str(message.service)[:200]}")
     
     return None
 
+async def extract_star_gift_info(service):
+    """Извлекает детальную информацию о Star Gift"""
+    try:
+        details = {
+            "gift_type": "Star Gift",
+            "raw_data": str(service)
+        }
+        
+        # Пытаемся извлечь специфичные поля
+        if hasattr(service, 'gift'):
+            gift = service.gift
+            if hasattr(gift, 'stars'):
+                details["stars"] = gift.stars
+            if hasattr(gift, 'id'):
+                details["gift_id"] = gift.id
+            if hasattr(gift, 'limited'):
+                details["limited"] = gift.limited
+            if hasattr(gift, 'sold_out'):
+                details["sold_out"] = gift.sold_out
+                
+        return details
+    except Exception as e:
+        logger.error(f"Ошибка извлечения Star Gift info: {e}")
+        return {"gift_type": "Star Gift", "raw_data": str(service)}
+
+async def extract_premium_gift_info(service):
+    """Извлекает детальную информацию о Premium Gift"""
+    try:
+        details = {
+            "gift_type": "Premium Gift",
+            "raw_data": str(service)
+        }
+        
+        if hasattr(service, 'months'):
+            details["months"] = service.months
+        if hasattr(service, 'currency'):
+            details["currency"] = service.currency
+        if hasattr(service, 'amount'):
+            details["amount"] = service.amount
+            
+        return details
+    except Exception as e:
+        logger.error(f"Ошибка извлечения Premium Gift info: {e}")
+        return {"gift_type": "Premium Gift", "raw_data": str(service)}
+
+async def extract_general_gift_info(service):
+    """Извлекает информацию о других типах подарков"""
+    try:
+        return {
+            "gift_type": "Telegram Gift",
+            "raw_data": str(service),
+            "attributes": [attr for attr in dir(service) if not attr.startswith('_')]
+        }
+    except Exception as e:
+        logger.error(f"Ошибка извлечения General Gift info: {e}")
+        return {"gift_type": "Telegram Gift", "raw_data": str(service)}
+
 async def send_gift_response(client, original_message, gift_info):
-    """Отправляет ответ с информацией о подарке"""
+    """Отправляет ответ с информацией о ОФИЦИАЛЬНОМ Telegram подарке"""
     
     try:
-        # Формируем ответ
-        response_text = f"""🎁 <b>ИНФОРМАЦИЯ О ПОДАРКЕ</b>
+        # Формируем детальный ответ в зависимости от типа подарка
+        if gift_info['type'] == 'star_gift':
+            response_text = f"""⭐ <b>STAR GIFT ПОЛУЧЕН!</b>
 
-🔍 <b>Тип:</b> {gift_info['type']}
-📝 <b>Детали:</b> {gift_info.get('details', 'N/A')}
+🎁 <b>Тип:</b> {gift_info['details']['gift_type']}
+⭐ <b>Звезды:</b> {gift_info['details'].get('stars', 'N/A')}
+🆔 <b>ID подарка:</b> {gift_info['details'].get('gift_id', 'N/A')}
+🏆 <b>Лимитированный:</b> {gift_info['details'].get('limited', 'N/A')}
+📊 <b>Распродан:</b> {gift_info['details'].get('sold_out', 'N/A')}
 🆔 <b>ID сообщения:</b> {original_message.message_id}
 ⏰ <b>Время:</b> {datetime.now().strftime('%H:%M:%S')}
 
-✨ <b>Спасибо за подарок!</b> ✨"""
+🌟 <b>СПАСИБО ЗА STAR GIFT!</b> 🌟"""
 
-        # Отправляем ответ в тот же чат
-        if original_message.chat:
-            await client.send_message(
-                chat_id=original_message.chat.id,
-                text=response_text,
-                parse_mode="HTML",
-                reply_to_message_id=original_message.message_id
-            )
-            logger.info(f"Отправлен ответ о подарке в чат {original_message.chat.id}")
+        elif gift_info['type'] == 'premium_gift':
+            response_text = f"""💎 <b>PREMIUM GIFT ПОЛУЧЕН!</b>
+
+🎁 <b>Тип:</b> {gift_info['details']['gift_type']}
+📅 <b>Месяцы:</b> {gift_info['details'].get('months', 'N/A')}
+💰 <b>Валюта:</b> {gift_info['details'].get('currency', 'N/A')}
+💵 <b>Сумма:</b> {gift_info['details'].get('amount', 'N/A')}
+🆔 <b>ID сообщения:</b> {original_message.message_id}
+⏰ <b>Время:</b> {datetime.now().strftime('%H:%M:%S')}
+
+💎 <b>СПАСИБО ЗА PREMIUM!</b> 💎"""
+
+        else:
+            response_text = f"""🎁 <b>TELEGRAM GIFT ПОЛУЧЕН!</b>
+
+🔍 <b>Тип:</b> {gift_info['details']['gift_type']}
+📝 <b>Service:</b> {gift_info['service_type']}
+🆔 <b>ID сообщения:</b> {original_message.message_id}
+⏰ <b>Время:</b> {datetime.now().strftime('%H:%M:%S')}
+
+🎉 <b>СПАСИБО ЗА ПОДАРОК!</b> 🎉
+
+<i>Детали:</i>
+{gift_info['details'].get('raw_data', 'N/A')[:300]}"""
+
+        # Отправляем ответ отправителю в личные сообщения
+        if original_message.from_user:
+            try:
+                await client.send_message(
+                    chat_id=original_message.from_user.id,
+                    text=response_text,
+                    parse_mode="HTML"
+                )
+                logger.info(f"✅ Отправлен ответ о подарке в ЛС пользователю {original_message.from_user.id}")
+            except Exception as dm_error:
+                logger.warning(f"Не удалось отправить в ЛС: {dm_error}")
+                # Fallback: отправляем в тот же чат
+                if original_message.chat:
+                    await client.send_message(
+                        chat_id=original_message.chat.id,
+                        text=response_text,
+                        parse_mode="HTML",
+                        reply_to_message_id=original_message.message_id
+                    )
+                    logger.info(f"📨 Отправлен ответ о подарке в чат {original_message.chat.id}")
         
     except Exception as e:
         logger.error(f"Ошибка отправки ответа: {e}")
