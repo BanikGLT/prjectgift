@@ -111,14 +111,21 @@ def read_root():
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(config)
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    return response.text().then(text => {
+                        throw new Error(`HTTP ${response.status}: ${text}`);
+                    });
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.status === 'sms_required') {
                     // Показываем поля для авторизации
                     document.getElementById('auth-fields').style.display = 'block';
                     document.getElementById('start-btn').textContent = '📱 SMS отправлен';
                     alert('SMS код отправлен! Введите его в поле ниже.');
-                } else if (data.status === 'started') {
+                } else if (data.status === 'success') {
                     alert(data.message);
                     document.getElementById('start-btn').disabled = false;
                     document.getElementById('start-btn').textContent = '🚀 Запустить детектор';
@@ -130,7 +137,8 @@ def read_root():
                 refreshStatus();
             })
             .catch(error => {
-                alert('Ошибка: ' + error);
+                console.error('Ошибка запуска:', error);
+                alert('Ошибка: ' + error.message);
                 document.getElementById('start-btn').disabled = false;
                 document.getElementById('start-btn').textContent = '🚀 Запустить детектор';
             });
@@ -153,7 +161,14 @@ def read_root():
                     password: password
                 })
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    return response.text().then(text => {
+                        throw new Error(`HTTP ${response.status}: ${text}`);
+                    });
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.status === 'success') {
                     alert('✅ Авторизация успешна! Детектор запущен.');
@@ -166,7 +181,8 @@ def read_root():
                 refreshStatus();
             })
             .catch(error => {
-                alert('Ошибка: ' + error);
+                console.error('Ошибка авторизации:', error);
+                alert('Ошибка авторизации: ' + error.message);
             });
         }
         
@@ -181,7 +197,12 @@ def read_root():
         
         function loadSessions() {
             fetch('/detector/sessions')
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    return response.json();
+                })
                 .then(data => {
                     const sessionsList = document.getElementById('sessions-list');
                     if (data.sessions.length === 0) {
@@ -208,7 +229,8 @@ def read_root():
                     sessionsList.innerHTML = html;
                 })
                 .catch(error => {
-                    document.getElementById('sessions-list').innerHTML = '<p>Ошибка загрузки сессий</p>';
+                    console.error('Ошибка загрузки сессий:', error);
+                    document.getElementById('sessions-list').innerHTML = '<p>Ошибка загрузки сессий: ' + error.message + '</p>';
                 });
         }
         
@@ -220,13 +242,21 @@ def read_root():
             fetch(`/detector/sessions/${sessionName}`, {
                 method: 'DELETE'
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    return response.text().then(text => {
+                        throw new Error(`HTTP ${response.status}: ${text}`);
+                    });
+                }
+                return response.json();
+            })
             .then(data => {
                 alert(data.message);
                 loadSessions(); // Обновляем список
             })
             .catch(error => {
-                alert('Ошибка удаления сессии: ' + error);
+                console.error('Ошибка удаления сессии:', error);
+                alert('Ошибка удаления сессии: ' + error.message);
             });
         }
         
@@ -391,20 +421,25 @@ async def start_detector(config: TelegramConfig):
             if me:
                 # Уже авторизован, запускаем детектор
                 auth_session["awaiting_sms"] = False
-                logger.info(f"Используется сохраненная сессия для {me.first_name} (@{me.username})")
+                username = f"@{me.username}" if me.username else "без username"
+                logger.info(f"Используется сохраненная сессия для {me.first_name} ({username})")
                 return await _start_detector_after_auth()
         except Exception as e:
             logger.info(f"Сохраненная сессия недействительна: {e}")
         
         # Нужна новая авторизация, отправляем SMS
         try:
-            await client.send_code(config.phone_number)
+            sent_code = await client.send_code(config.phone_number)
             auth_session["awaiting_sms"] = True
             
             logger.info(f"SMS код отправлен на {config.phone_number}")
             return {"message": "SMS код отправлен", "status": "sms_required"}
         except Exception as e:
-            await client.disconnect()
+            logger.error(f"Ошибка отправки SMS: {e}")
+            try:
+                await client.disconnect()
+            except:
+                pass
             auth_session["client"] = None
             raise Exception(f"Ошибка отправки SMS: {str(e)}")
             
@@ -435,12 +470,14 @@ async def complete_auth(auth_data: dict):
         try:
             # Пытаемся войти с SMS кодом
             await client.sign_in(auth_session["config"].phone_number, sms_code)
+            logger.info("Авторизация по SMS коду успешна")
             
         except SessionPasswordNeeded:
             # Нужен пароль 2FA
             if not password:
                 raise HTTPException(status_code=400, detail="Требуется пароль 2FA")
             await client.check_password(password)
+            logger.info("Авторизация по 2FA успешна")
         
         # Авторизация успешна
         auth_session["awaiting_sms"] = False
