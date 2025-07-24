@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import logging
 
@@ -14,7 +15,7 @@ class TelegramConfig(BaseModel):
     api_hash: str
     phone_number: str
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def index():
     return """
     <!DOCTYPE html>
